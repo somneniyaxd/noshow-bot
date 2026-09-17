@@ -8,7 +8,14 @@ import psycopg2
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    Message,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+)
 
 # ============================================================
 # ТОКЕН и БАЗА
@@ -20,7 +27,7 @@ USE_POSTGRES = DATABASE_URL.startswith("postgres")
 
 
 # ============================================================
-# Работа с базой (SQLite локально, PostgreSQL на Railway)
+# Работа с базой
 # ============================================================
 def get_conn():
     if USE_POSTGRES:
@@ -46,7 +53,8 @@ def init_db():
                 chat_id BIGINT,
                 visit_time TEXT,
                 confirmed INTEGER DEFAULT 0,
-                cancelled INTEGER DEFAULT 0
+                cancelled INTEGER DEFAULT 0,
+                reschedule INTEGER DEFAULT 0
             )
         """)
         conn.commit()
@@ -59,7 +67,8 @@ def init_db():
                 chat_id INTEGER,
                 visit_time TEXT,
                 confirmed INTEGER DEFAULT 0,
-                cancelled INTEGER DEFAULT 0
+                cancelled INTEGER DEFAULT 0,
+                reschedule INTEGER DEFAULT 0
             )
         """)
         cur.execute("""
@@ -70,6 +79,7 @@ def init_db():
         """)
         conn.commit()
     conn.close()
+
 
 def set_role(user_id, role):
     conn = get_conn()
@@ -117,7 +127,7 @@ def get_clients(groomer_id):
     cur = conn.cursor()
     placeholder = "%s" if USE_POSTGRES else "?"
     cur.execute(
-        f"SELECT id, name, visit_time, confirmed, cancelled FROM clients "
+        f"SELECT id, name, visit_time, confirmed, cancelled, reschedule FROM clients "
         f"WHERE groomer_id = {placeholder} ORDER BY visit_time",
         (groomer_id,),
     )
@@ -140,7 +150,7 @@ def cleanup_old_records():
 
 
 # ============================================================
-# Бот
+# Бот и клавиатуры
 # ============================================================
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -161,7 +171,18 @@ main_kb = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+client_kb = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, буду на груминге", callback_data="confirm")],
+        [InlineKeyboardButton(text="📞 Связаться для перезаписи", callback_data="reschedule")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")],
+    ]
+)
 
+
+# ============================================================
+# Команды и выбор роли
+# ============================================================
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     role = get_role(message.from_user.id)
@@ -203,6 +224,9 @@ async def choose_client(message: Message):
     )
 
 
+# ============================================================
+# Добавление записи
+# ============================================================
 @dp.message(Command("add"))
 async def cmd_add(message: Message):
     if get_role(message.from_user.id) != "groomer":
@@ -236,28 +260,32 @@ async def handle_add(message: Message):
         await message.answer(f"❌ Ошибка: {e}\n\nФормат: Имя, chat_id, 2026-09-18 15:30")
 
 
-@dp.message(F.text.lower().in_({"да", "yes", "+", "подтверждаю"}))
-async def handle_confirm(message: Message):
+# ============================================================
+# Кнопки клиента: подтвердить / перезапись / отмена
+# ============================================================
+@dp.callback_query(F.data == "confirm")
+async def cb_confirm(callback: CallbackQuery):
     conn = get_conn()
     cur = conn.cursor()
     placeholder = "%s" if USE_POSTGRES else "?"
     cur.execute(
         f"UPDATE clients SET confirmed = 1 "
         f"WHERE chat_id = {placeholder} AND confirmed = 0 AND cancelled = 0",
-        (message.from_user.id,),
+        (callback.from_user.id,),
     )
     changed = cur.rowcount
     conn.commit()
     conn.close()
 
     if changed:
-        await message.answer("✅ Спасибо! Ваша запись подтверждена.")
+        await callback.message.edit_text("✅ Спасибо! Ждём вас на груминге.")
     else:
-        await message.answer("У вас нет активных записей для подтверждения.")
+        await callback.message.edit_text("У вас нет активных записей.")
+    await callback.answer()
 
 
-@dp.message(F.text.lower().in_({"нет", "no", "-", "не смогу", "отмена", "отменить"}))
-async def handle_cancel(message: Message):
+@dp.callback_query(F.data == "reschedule")
+async def cb_reschedule(callback: CallbackQuery):
     conn = get_conn()
     cur = conn.cursor()
     placeholder = "%s" if USE_POSTGRES else "?"
@@ -265,36 +293,84 @@ async def handle_cancel(message: Message):
     cur.execute(
         f"SELECT id, groomer_id, name, visit_time FROM clients "
         f"WHERE chat_id = {placeholder} AND confirmed = 0 AND cancelled = 0",
-        (message.from_user.id,),
+        (callback.from_user.id,),
     )
     rows = cur.fetchall()
 
     if not rows:
         conn.close()
-        await message.answer("У вас нет активных записей для отмены.")
+        await callback.message.edit_text("У вас нет активных записей.")
+        await callback.answer()
         return
 
     cur.execute(
-        f"UPDATE clients SET cancelled = 1 "
+        f"UPDATE clients SET reschedule = 1 "
         f"WHERE chat_id = {placeholder} AND cancelled = 0",
-        (message.from_user.id,),
+        (callback.from_user.id,),
     )
     conn.commit()
     conn.close()
 
-    await message.answer("Спасибо, что предупредили! Грумер уже знает, что вы не придёте.")
+    await callback.message.edit_text(
+        "📞 Понял! Передал грумеру — он свяжется с вами для перезаписи."
+    )
+    await callback.answer()
 
     for cid, groomer_id, name, visit_time in rows:
         try:
             await bot.send_message(
                 groomer_id,
-                f"⚠️ {name} не сможет прийти {visit_time}.\n\n"
-                "Слот освободился — можно позвать другого клиента.",
+                f"📞 {name} хочет перезаписаться (был визит на {visit_time}).\n\n"
+                "Свяжитесь с клиентом.",
+            )
+        except Exception as e:
+            print(f"[ПЕРЕЗАПИСЬ] Не удалось уведомить грумера {groomer_id}: {e}")
+
+
+@dp.callback_query(F.data == "cancel")
+async def cb_cancel(callback: CallbackQuery):
+    conn = get_conn()
+    cur = conn.cursor()
+    placeholder = "%s" if USE_POSTGRES else "?"
+
+    cur.execute(
+        f"SELECT id, groomer_id, name, visit_time FROM clients "
+        f"WHERE chat_id = {placeholder} AND confirmed = 0 AND cancelled = 0",
+        (callback.from_user.id,),
+    )
+    rows = cur.fetchall()
+
+    if not rows:
+        conn.close()
+        await callback.message.edit_text("У вас нет активных записей.")
+        await callback.answer()
+        return
+
+    cur.execute(
+        f"UPDATE clients SET cancelled = 1 "
+        f"WHERE chat_id = {placeholder} AND cancelled = 0",
+        (callback.from_user.id,),
+    )
+    conn.commit()
+    conn.close()
+
+    await callback.message.edit_text("❌ Запись отменена. Грумер уже знает.")
+    await callback.answer()
+
+    for cid, groomer_id, name, visit_time in rows:
+        try:
+            await bot.send_message(
+                groomer_id,
+                f"❌ {name} отменил запись на {visit_time}.\n\n"
+                "Слот освободился.",
             )
         except Exception as e:
             print(f"[ОТМЕНА] Не удалось уведомить грумера {groomer_id}: {e}")
 
 
+# ============================================================
+# Список записей
+# ============================================================
 @dp.message(Command("list"))
 async def cmd_list(message: Message):
     if get_role(message.from_user.id) != "groomer":
@@ -305,9 +381,11 @@ async def cmd_list(message: Message):
         await message.answer("Пока нет записей.")
         return
     text = "📋 Твои записи:\n\n"
-    for rid, name, visit_time, confirmed, cancelled in rows:
+    for rid, name, visit_time, confirmed, cancelled, reschedule in rows:
         if cancelled:
             status = "❌"
+        elif reschedule:
+            status = "📞"
         elif confirmed:
             status = "✅"
         else:
@@ -338,6 +416,7 @@ async def reminder_loop():
 
             ph = "%s" if USE_POSTGRES else "?"
 
+            # За 3 часа
             target_3h = now + timedelta(hours=3)
             cur.execute(
                 f"SELECT id, name, chat_id, visit_time FROM clients "
@@ -347,6 +426,7 @@ async def reminder_loop():
             )
             rows_3h = cur.fetchall()
 
+            # За 30 минут
             target_30m = now + timedelta(minutes=30)
             cur.execute(
                 f"SELECT id, name, chat_id, visit_time FROM clients "
@@ -379,7 +459,8 @@ async def reminder_loop():
                     await bot.send_message(
                         chat_id,
                         f"Здравствуйте! Ваша запись на груминг через полчаса — в {time_str}.\n\n"
-                        "Ответьте «Да», чтобы подтвердить, или «Нет», если не сможете прийти."
+                        "Подтвердите, пожалуйста, визит:",
+                        reply_markup=client_kb,
                     )
                     print(f"[30мин OK] {name} ({chat_id})")
                 except Exception as e:
