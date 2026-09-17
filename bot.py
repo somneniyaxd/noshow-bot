@@ -33,6 +33,12 @@ def init_db():
     cur = conn.cursor()
     if USE_POSTGRES:
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                role TEXT
+            )
+        """)
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS clients (
                 id SERIAL PRIMARY KEY,
                 groomer_id BIGINT,
@@ -43,16 +49,7 @@ def init_db():
                 cancelled INTEGER DEFAULT 0
             )
         """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                role TEXT
-            )
-        """)
-        try:
-            cur.execute("ALTER TABLE clients ADD COLUMN cancelled INTEGER DEFAULT 0")
-        except Exception:
-            pass
+        conn.commit()
     else:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS clients (
@@ -71,9 +68,8 @@ def init_db():
                 role TEXT
             )
         """)
-    conn.commit()
+        conn.commit()
     conn.close()
-
 
 def set_role(user_id, role):
     conn = get_conn()
