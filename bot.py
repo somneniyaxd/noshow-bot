@@ -57,6 +57,15 @@ def init_db():
                 reschedule INTEGER DEFAULT 0
             )
         """)
+        # Добавляем колонки, если их нет (для старых баз)
+        try:
+            cur.execute("ALTER TABLE clients ADD COLUMN IF NOT EXISTS reschedule INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        try:
+            cur.execute("ALTER TABLE clients ADD COLUMN IF NOT EXISTS cancelled INTEGER DEFAULT 0")
+        except Exception:
+            pass
         conn.commit()
     else:
         cur.execute("""
