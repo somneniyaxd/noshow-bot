@@ -4,66 +4,105 @@ import os
 import sqlite3
 from datetime import datetime, timedelta
 
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 
 # ============================================================
-# ТОКЕН
+# ТОКЕН и БАЗА
 # ============================================================
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+DATABASE_URL = os.getenv("DATABASE_URL", "noshow.db")
+
+USE_POSTGRES = DATABASE_URL.startswith("postgres")
 
 # ============================================================
-# База данных
+# Работа с базой (универсально: SQLite локально, PostgreSQL на Railway)
 # ============================================================
-DB = "noshow.db"
+def get_conn():
+    if USE_POSTGRES:
+        return psycopg2.connect(DATABASE_URL)
+    return sqlite3.connect(DATABASE_URL)
 
 
 def init_db():
-    conn = sqlite3.connect(DB)
+    conn = get_conn()
     cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS clients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            groomer_id INTEGER,
-            name TEXT,
-            chat_id INTEGER,
-            visit_time TEXT,
-            confirmed INTEGER DEFAULT 0
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            role TEXT
-        )
-    """)
+    if USE_POSTGRES:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS clients (
+                id SERIAL PRIMARY KEY,
+                groomer_id BIGINT,
+                name TEXT,
+                chat_id BIGINT,
+                visit_time TEXT,
+                confirmed INTEGER DEFAULT 0
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                role TEXT
+            )
+        """)
+    else:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS clients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                groomer_id INTEGER,
+                name TEXT,
+                chat_id INTEGER,
+                visit_time TEXT,
+                confirmed INTEGER DEFAULT 0
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                role TEXT
+            )
+        """)
     conn.commit()
     conn.close()
 
 
 def set_role(user_id, role):
-    conn = sqlite3.connect(DB)
+    conn = get_conn()
     cur = conn.cursor()
-    cur.execute("INSERT OR REPLACE INTO users (user_id, role) VALUES (?, ?)", (user_id, role))
+    if USE_POSTGRES:
+        cur.execute(
+            "INSERT INTO users (user_id, role) VALUES (%s, %s) "
+            "ON CONFLICT (user_id) DO UPDATE SET role = EXCLUDED.role",
+            (user_id, role),
+        )
+    else:
+        cur.execute(
+            "INSERT OR REPLACE INTO users (user_id, role) VALUES (?, ?)",
+            (user_id, role),
+        )
     conn.commit()
     conn.close()
 
 
 def get_role(user_id):
-    conn = sqlite3.connect(DB)
+    conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT role FROM users WHERE user_id = ?", (user_id,))
+    placeholder = "%s" if USE_POSTGRES else "?"
+    cur.execute(f"SELECT role FROM users WHERE user_id = {placeholder}", (user_id,))
     row = cur.fetchone()
     conn.close()
     return row[0] if row else None
 
 
 def add_client(groomer_id, name, chat_id, visit_time):
-    conn = sqlite3.connect(DB)
+    conn = get_conn()
     cur = conn.cursor()
+    placeholder = "%s" if USE_POSTGRES else "?"
     cur.execute(
-        "INSERT INTO clients (groomer_id, name, chat_id, visit_time) VALUES (?, ?, ?, ?)",
+        f"INSERT INTO clients (groomer_id, name, chat_id, visit_time) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})",
         (groomer_id, name, chat_id, visit_time),
     )
     conn.commit()
@@ -71,10 +110,11 @@ def add_client(groomer_id, name, chat_id, visit_time):
 
 
 def get_clients(groomer_id):
-    conn = sqlite3.connect(DB)
+    conn = get_conn()
     cur = conn.cursor()
+    placeholder = "%s" if USE_POSTGRES else "?"
     cur.execute(
-        "SELECT id, name, visit_time, confirmed FROM clients WHERE groomer_id = ? ORDER BY visit_time",
+        f"SELECT id, name, visit_time, confirmed FROM clients WHERE groomer_id = {placeholder} ORDER BY visit_time",
         (groomer_id,),
     )
     rows = cur.fetchall()
@@ -83,11 +123,12 @@ def get_clients(groomer_id):
 
 
 def cleanup_old_records():
-    conn = sqlite3.connect(DB)
+    conn = get_conn()
     cur = conn.cursor()
+    placeholder = "%s" if USE_POSTGRES else "?"
     now = datetime.now()
     cutoff = (now - timedelta(days=1)).strftime("%Y-%m-%d %H:%M")
-    cur.execute("DELETE FROM clients WHERE visit_time < ?", (cutoff,))
+    cur.execute(f"DELETE FROM clients WHERE visit_time < {placeholder}", (cutoff,))
     deleted = cur.rowcount
     conn.commit()
     conn.close()
@@ -193,10 +234,11 @@ async def handle_add(message: Message):
 
 @dp.message(F.text.lower().in_({"да", "yes", "+", "подтверждаю"}))
 async def handle_confirm(message: Message):
-    conn = sqlite3.connect(DB)
+    conn = get_conn()
     cur = conn.cursor()
+    placeholder = "%s" if USE_POSTGRES else "?"
     cur.execute(
-        "UPDATE clients SET confirmed = 1 WHERE chat_id = ? AND confirmed = 0",
+        f"UPDATE clients SET confirmed = 1 WHERE chat_id = {placeholder} AND confirmed = 0",
         (message.from_user.id,),
     )
     changed = cur.rowcount
@@ -236,30 +278,30 @@ async def btn_add(message: Message):
 
 
 # ============================================================
-# Автонапоминания: два захода — за 3 часа и за 30 минут
+# Автонапоминания
 # ============================================================
 async def reminder_loop():
     while True:
         try:
-            conn = sqlite3.connect(DB)
+            conn = get_conn()
             cur = conn.cursor()
             now = datetime.now()
 
-            # --- Напоминание 1: за 3 часа ---
+            ph = "%s" if USE_POSTGRES else "?"
+
             target_3h = now + timedelta(hours=3)
             cur.execute(
-                "SELECT id, name, chat_id, visit_time FROM clients "
-                "WHERE confirmed = 0 AND visit_time BETWEEN ? AND ?",
+                f"SELECT id, name, chat_id, visit_time FROM clients "
+                f"WHERE confirmed = 0 AND visit_time BETWEEN {ph} AND {ph}",
                 (target_3h.strftime("%Y-%m-%d %H:%M"),
                  (target_3h + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M")),
             )
             rows_3h = cur.fetchall()
 
-            # --- Напоминание 2: за 30 минут ---
             target_30m = now + timedelta(minutes=30)
             cur.execute(
-                "SELECT id, name, chat_id, visit_time FROM clients "
-                "WHERE confirmed = 0 AND visit_time BETWEEN ? AND ?",
+                f"SELECT id, name, chat_id, visit_time FROM clients "
+                f"WHERE confirmed = 0 AND visit_time BETWEEN {ph} AND {ph}",
                 (target_30m.strftime("%Y-%m-%d %H:%M"),
                  (target_30m + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M")),
             )
@@ -268,7 +310,6 @@ async def reminder_loop():
 
             print(f"[{now.strftime('%H:%M')}] За 3ч: {len(rows_3h)} | За 30мин: {len(rows_30m)}")
 
-            # --- Отправка: за 3 часа ---
             for cid, name, chat_id, visit_time in rows_3h:
                 try:
                     visit_dt = datetime.strptime(visit_time, "%Y-%m-%d %H:%M")
@@ -283,7 +324,6 @@ async def reminder_loop():
                 except Exception as e:
                     print(f"[3ч ОШИБКА] {name}: {e}")
 
-            # --- Отправка: за 30 минут ---
             for cid, name, chat_id, visit_time in rows_30m:
                 try:
                     time_str = datetime.strptime(visit_time, "%Y-%m-%d %H:%M").strftime("%H:%M")
@@ -302,9 +342,6 @@ async def reminder_loop():
         await asyncio.sleep(60)
 
 
-# ============================================================
-# Очистка старых записей: раз в час удаляем то, что старше суток
-# ============================================================
 async def cleanup_loop():
     while True:
         try:
@@ -324,7 +361,7 @@ async def main():
     init_db()
     asyncio.create_task(reminder_loop())
     asyncio.create_task(cleanup_loop())
-    print("Бот запущен. Нажми Ctrl+C для остановки.")
+    print(f"Бот запущен. База: {'PostgreSQL' if USE_POSTGRES else 'SQLite'}")
     await dp.start_polling(bot)
 
 
