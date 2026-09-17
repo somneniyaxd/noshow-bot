@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import sqlite3
 from datetime import datetime, timedelta
 
@@ -8,9 +9,9 @@ from aiogram.filters import Command
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 
 # ============================================================
-# ВСТАВЬ СЮДА СВОЙ ТОКЕН ОТ @BotFather
+# ТОКЕН
 # ============================================================
-BOT_TOKEN = "8943029255:AAGPKqyH6Hl_g0UKiFCR4NbOAclCap_LbiE"
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
 # ============================================================
 # База данных
