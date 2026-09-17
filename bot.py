@@ -5,7 +5,6 @@ import sqlite3
 from datetime import datetime, timedelta
 
 import psycopg2
-from psycopg2.extras import RealDictCursor
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -19,8 +18,9 @@ DATABASE_URL = os.getenv("DATABASE_URL", "noshow.db")
 
 USE_POSTGRES = DATABASE_URL.startswith("postgres")
 
+
 # ============================================================
-# Работа с базой (универсально: SQLite локально, PostgreSQL на Railway)
+# Работа с базой (SQLite локально, PostgreSQL на Railway)
 # ============================================================
 def get_conn():
     if USE_POSTGRES:
@@ -39,7 +39,8 @@ def init_db():
                 name TEXT,
                 chat_id BIGINT,
                 visit_time TEXT,
-                confirmed INTEGER DEFAULT 0
+                confirmed INTEGER DEFAULT 0,
+                cancelled INTEGER DEFAULT 0
             )
         """)
         cur.execute("""
@@ -48,6 +49,10 @@ def init_db():
                 role TEXT
             )
         """)
+        try:
+            cur.execute("ALTER TABLE clients ADD COLUMN cancelled INTEGER DEFAULT 0")
+        except Exception:
+            pass
     else:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS clients (
@@ -56,7 +61,8 @@ def init_db():
                 name TEXT,
                 chat_id INTEGER,
                 visit_time TEXT,
-                confirmed INTEGER DEFAULT 0
+                confirmed INTEGER DEFAULT 0,
+                cancelled INTEGER DEFAULT 0
             )
         """)
         cur.execute("""
@@ -102,7 +108,8 @@ def add_client(groomer_id, name, chat_id, visit_time):
     cur = conn.cursor()
     placeholder = "%s" if USE_POSTGRES else "?"
     cur.execute(
-        f"INSERT INTO clients (groomer_id, name, chat_id, visit_time) VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})",
+        f"INSERT INTO clients (groomer_id, name, chat_id, visit_time) "
+        f"VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})",
         (groomer_id, name, chat_id, visit_time),
     )
     conn.commit()
@@ -114,7 +121,8 @@ def get_clients(groomer_id):
     cur = conn.cursor()
     placeholder = "%s" if USE_POSTGRES else "?"
     cur.execute(
-        f"SELECT id, name, visit_time, confirmed FROM clients WHERE groomer_id = {placeholder} ORDER BY visit_time",
+        f"SELECT id, name, visit_time, confirmed, cancelled FROM clients "
+        f"WHERE groomer_id = {placeholder} ORDER BY visit_time",
         (groomer_id,),
     )
     rows = cur.fetchall()
@@ -238,7 +246,8 @@ async def handle_confirm(message: Message):
     cur = conn.cursor()
     placeholder = "%s" if USE_POSTGRES else "?"
     cur.execute(
-        f"UPDATE clients SET confirmed = 1 WHERE chat_id = {placeholder} AND confirmed = 0",
+        f"UPDATE clients SET confirmed = 1 "
+        f"WHERE chat_id = {placeholder} AND confirmed = 0 AND cancelled = 0",
         (message.from_user.id,),
     )
     changed = cur.rowcount
@@ -251,6 +260,45 @@ async def handle_confirm(message: Message):
         await message.answer("У вас нет активных записей для подтверждения.")
 
 
+@dp.message(F.text.lower().in_({"нет", "no", "-", "не смогу", "отмена", "отменить"}))
+async def handle_cancel(message: Message):
+    conn = get_conn()
+    cur = conn.cursor()
+    placeholder = "%s" if USE_POSTGRES else "?"
+
+    cur.execute(
+        f"SELECT id, groomer_id, name, visit_time FROM clients "
+        f"WHERE chat_id = {placeholder} AND confirmed = 0 AND cancelled = 0",
+        (message.from_user.id,),
+    )
+    rows = cur.fetchall()
+
+    if not rows:
+        conn.close()
+        await message.answer("У вас нет активных записей для отмены.")
+        return
+
+    cur.execute(
+        f"UPDATE clients SET cancelled = 1 "
+        f"WHERE chat_id = {placeholder} AND cancelled = 0",
+        (message.from_user.id,),
+    )
+    conn.commit()
+    conn.close()
+
+    await message.answer("Спасибо, что предупредили! Грумер уже знает, что вы не придёте.")
+
+    for cid, groomer_id, name, visit_time in rows:
+        try:
+            await bot.send_message(
+                groomer_id,
+                f"⚠️ {name} не сможет прийти {visit_time}.\n\n"
+                "Слот освободился — можно позвать другого клиента.",
+            )
+        except Exception as e:
+            print(f"[ОТМЕНА] Не удалось уведомить грумера {groomer_id}: {e}")
+
+
 @dp.message(Command("list"))
 async def cmd_list(message: Message):
     if get_role(message.from_user.id) != "groomer":
@@ -261,8 +309,13 @@ async def cmd_list(message: Message):
         await message.answer("Пока нет записей.")
         return
     text = "📋 Твои записи:\n\n"
-    for rid, name, visit_time, confirmed in rows:
-        status = "✅" if confirmed else "⏳"
+    for rid, name, visit_time, confirmed, cancelled in rows:
+        if cancelled:
+            status = "❌"
+        elif confirmed:
+            status = "✅"
+        else:
+            status = "⏳"
         text += f"{status} {name} — {visit_time}\n"
     await message.answer(text)
 
@@ -292,7 +345,7 @@ async def reminder_loop():
             target_3h = now + timedelta(hours=3)
             cur.execute(
                 f"SELECT id, name, chat_id, visit_time FROM clients "
-                f"WHERE confirmed = 0 AND visit_time BETWEEN {ph} AND {ph}",
+                f"WHERE confirmed = 0 AND cancelled = 0 AND visit_time BETWEEN {ph} AND {ph}",
                 (target_3h.strftime("%Y-%m-%d %H:%M"),
                  (target_3h + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M")),
             )
@@ -301,7 +354,7 @@ async def reminder_loop():
             target_30m = now + timedelta(minutes=30)
             cur.execute(
                 f"SELECT id, name, chat_id, visit_time FROM clients "
-                f"WHERE confirmed = 0 AND visit_time BETWEEN {ph} AND {ph}",
+                f"WHERE confirmed = 0 AND cancelled = 0 AND visit_time BETWEEN {ph} AND {ph}",
                 (target_30m.strftime("%Y-%m-%d %H:%M"),
                  (target_30m + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M")),
             )
@@ -330,7 +383,7 @@ async def reminder_loop():
                     await bot.send_message(
                         chat_id,
                         f"Здравствуйте! Ваша запись на груминг через полчаса — в {time_str}.\n\n"
-                        "Ответьте «Да», чтобы подтвердить."
+                        "Ответьте «Да», чтобы подтвердить, или «Нет», если не сможете прийти."
                     )
                     print(f"[30мин OK] {name} ({chat_id})")
                 except Exception as e:
