@@ -16,6 +16,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     CallbackQuery,
+    ReplyKeyboardRemove,
 )
 
 # ============================================================
@@ -24,8 +25,7 @@ from aiogram.types import (
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "noshow.db")
 
-# Часовой пояс бота. По умолчанию — Минск.
-# Можно переопределить через переменную TIMEZONE на Railway.
+# Часовой пояс бота (по умолчанию — Минск)
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Minsk")
 TZ = ZoneInfo(TIMEZONE)
 
@@ -209,13 +209,26 @@ async def cmd_start(message: Message):
         )
     elif role == "client":
         await message.answer(
-            "Ты в режиме клиента. Всё в порядке — жди напоминания о записи."
+            "Ты в режиме клиента. Всё в порядке — жди напоминания о записи.",
+            reply_markup=ReplyKeyboardRemove(),
         )
     else:
         await message.answer(
             f"Привет, {message.from_user.first_name}!\n\n"
             "Кто ты? Это нужно выбрать один раз.",
             reply_markup=role_kb,
+        )
+
+
+@dp.message(Command("reset"))
+async def cmd_reset(message: Message):
+    role = get_role(message.from_user.id)
+    if role == "groomer":
+        await message.answer("Клавиатура обновлена.", reply_markup=main_kb)
+    else:
+        await message.answer(
+            "Клавиатура очищена. Напиши /start, если хочешь выбрать роль заново.",
+            reply_markup=ReplyKeyboardRemove(),
         )
 
 
@@ -234,7 +247,7 @@ async def choose_client(message: Message):
     set_role(message.from_user.id, "client")
     await message.answer(
         "Понял! Ты клиент. Когда приблизится время записи — я напомню.",
-        reply_markup=ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True),
+        reply_markup=ReplyKeyboardRemove(),
     )
 
 
@@ -268,7 +281,6 @@ async def handle_add(message: Message):
         name, chat_id, visit_time = parts[0], int(parts[1]), parts[2]
         visit_dt = datetime.strptime(visit_time, "%Y-%m-%d %H:%M")
 
-        # Проверка: не в прошлом
         if visit_dt < now().replace(tzinfo=None):
             await message.answer("❌ Дата уже прошла. Укажи будущее время.")
             return
@@ -424,7 +436,7 @@ async def btn_add(message: Message):
 
 
 # ============================================================
-# Автонапоминания (время — по часовому поясу TZ)
+# Автонапоминания
 # ============================================================
 async def reminder_loop():
     while True:
@@ -435,7 +447,6 @@ async def reminder_loop():
 
             ph = "%s" if USE_POSTGRES else "?"
 
-            # За 3 часа
             target_3h = current + timedelta(hours=3)
             cur.execute(
                 f"SELECT id, name, chat_id, visit_time FROM clients "
@@ -445,7 +456,6 @@ async def reminder_loop():
             )
             rows_3h = cur.fetchall()
 
-            # За 30 минут
             target_30m = current + timedelta(minutes=30)
             cur.execute(
                 f"SELECT id, name, chat_id, visit_time FROM clients "
