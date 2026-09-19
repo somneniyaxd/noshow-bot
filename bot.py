@@ -28,13 +28,12 @@ DATABASE_URL = os.getenv("DATABASE_URL", "noshow.db")
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Minsk")
 TZ = ZoneInfo(TIMEZONE)
 
-ADMIN_ID = 473980999  # Твой Telegram ID для админ-команд
+ADMIN_ID = 473980999
 
-TRIAL_DAYS = 3      # Пробный период
-PAID_DAYS = 30      # Период после оплаты
+TRIAL_DAYS = 3
+PAID_DAYS = 30
 
-# Ссылка на оплату (заменишь, когда получишь от bePaid)
-PAYMENT_LINK = "https://example.com/pay"  # ЗАГЛУШКА
+PAYMENT_LINK = "https://example.com/pay"  # ЗАГЛУШКА — заменишь на bePaid
 
 USE_POSTGRES = DATABASE_URL.startswith("postgres")
 
@@ -145,16 +144,19 @@ def get_role(user_id):
 
 
 def start_trial_if_needed(user_id):
-    """Если мастер новый — ставим trial_until."""
+    """Ставит trial_until, если он ещё не установлен и нет paid_until."""
     conn = get_conn()
     cur = conn.cursor()
     placeholder = "%s" if USE_POSTGRES else "?"
 
-    cur.execute(f"SELECT trial_until, paid_until FROM subscriptions WHERE user_id = {placeholder}", (user_id,))
+    cur.execute(
+        f"SELECT trial_until, paid_until FROM subscriptions WHERE user_id = {placeholder}",
+        (user_id,),
+    )
     row = cur.fetchone()
 
     if row is None:
-        # Новая подписка — стартуем триал
+        # Совсем новый мастер — создаём запись с триалом
         trial_until = (now() + timedelta(days=TRIAL_DAYS)).strftime("%Y-%m-%d %H:%M")
         if USE_POSTGRES:
             cur.execute(
@@ -167,30 +169,40 @@ def start_trial_if_needed(user_id):
                 (user_id, trial_until),
             )
         conn.commit()
+    else:
+        trial_until, paid_until = row
+        # Если и триал, и оплата пустые — ставим триал
+        if not trial_until and not paid_until:
+            new_trial = (now() + timedelta(days=TRIAL_DAYS)).strftime("%Y-%m-%d %H:%M")
+            cur.execute(
+                f"UPDATE subscriptions SET trial_until = {placeholder} WHERE user_id = {placeholder}",
+                (new_trial, user_id),
+            )
+            conn.commit()
 
     conn.close()
 
 
 def get_subscription(user_id):
-    """Возвращает (trial_until, paid_until) — даты или None."""
     conn = get_conn()
     cur = conn.cursor()
     placeholder = "%s" if USE_POSTGRES else "?"
-    cur.execute(f"SELECT trial_until, paid_until FROM subscriptions WHERE user_id = {placeholder}", (user_id,))
+    cur.execute(
+        f"SELECT trial_until, paid_until FROM subscriptions WHERE user_id = {placeholder}",
+        (user_id,),
+    )
     row = cur.fetchone()
     conn.close()
     return row if row else (None, None)
 
 
 def set_paid_until(user_id, days=PAID_DAYS):
-    """Активирует подписку на N дней."""
     conn = get_conn()
     cur = conn.cursor()
     placeholder = "%s" if USE_POSTGRES else "?"
 
     paid_until = (now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
 
-    # Проверяем, есть ли уже запись
     cur.execute(f"SELECT user_id FROM subscriptions WHERE user_id = {placeholder}", (user_id,))
     exists = cur.fetchone()
 
@@ -354,12 +366,25 @@ async def choose_groomer(message: Message):
     start_trial_if_needed(message.from_user.id)
 
     trial_until, paid_until = get_subscription(message.from_user.id)
-    await message.answer(
-        "Отлично! Теперь ты можешь добавлять клиентов.\n\n"
-        f"🎁 Пробный период — до {trial_until} (3 дня)\n\n"
-        "Используй кнопки ниже или /add.",
-        reply_markup=main_kb,
-    )
+
+    if paid_until:
+        await message.answer(
+            f"Отлично! Теперь ты можешь добавлять клиентов.\n\n"
+            f"✅ Подписка активна до {paid_until}",
+            reply_markup=main_kb,
+        )
+    elif trial_until:
+        await message.answer(
+            f"Отлично! Теперь ты можешь добавлять клиентов.\n\n"
+            f"🎁 Пробный период — до {trial_until} ({TRIAL_DAYS} дня)",
+            reply_markup=main_kb,
+        )
+    else:
+        await message.answer(
+            "Отлично! Теперь ты можешь добавлять клиентов.\n\n"
+            "Используй кнопки ниже или /add.",
+            reply_markup=main_kb,
+        )
 
 
 @dp.message(F.text == "Я клиент")
@@ -450,7 +475,7 @@ async def cmd_activate(message: Message):
 
 
 # ============================================================
-# ДОБАВЛЕНИЕ ЗАПИСИ (с проверкой подписки)
+# ДОБАВЛЕНИЕ ЗАПИСИ
 # ============================================================
 @dp.message(Command("add"))
 async def cmd_add(message: Message):
