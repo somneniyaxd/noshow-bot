@@ -33,7 +33,7 @@ ADMIN_ID = 473980999
 TRIAL_DAYS = 3
 PAID_DAYS = 30
 
-PAYMENT_LINK = "https://example.com/pay"  # ЗАГЛУШКА — заменишь на bePaid
+PAYMENT_LINK = "https://example.com/pay"  # ЗАГЛУШКА
 
 USE_POSTGRES = DATABASE_URL.startswith("postgres")
 
@@ -144,7 +144,7 @@ def get_role(user_id):
 
 
 def start_trial_if_needed(user_id):
-    """Ставит trial_until, если он ещё не установлен и нет paid_until."""
+    """Ставит trial_until, если его нет и нет paid_until."""
     conn = get_conn()
     cur = conn.cursor()
     placeholder = "%s" if USE_POSTGRES else "?"
@@ -156,7 +156,6 @@ def start_trial_if_needed(user_id):
     row = cur.fetchone()
 
     if row is None:
-        # Совсем новый мастер — создаём запись с триалом
         trial_until = (now() + timedelta(days=TRIAL_DAYS)).strftime("%Y-%m-%d %H:%M")
         if USE_POSTGRES:
             cur.execute(
@@ -169,9 +168,9 @@ def start_trial_if_needed(user_id):
                 (user_id, trial_until),
             )
         conn.commit()
+        print(f"[TRIAL] Создан триал для {user_id} до {trial_until}")
     else:
         trial_until, paid_until = row
-        # Если и триал, и оплата пустые — ставим триал
         if not trial_until and not paid_until:
             new_trial = (now() + timedelta(days=TRIAL_DAYS)).strftime("%Y-%m-%d %H:%M")
             cur.execute(
@@ -179,6 +178,7 @@ def start_trial_if_needed(user_id):
                 (new_trial, user_id),
             )
             conn.commit()
+            print(f"[TRIAL] Обновлён триал для {user_id} до {new_trial}")
 
     conn.close()
 
@@ -228,7 +228,6 @@ def set_paid_until(user_id, days=PAID_DAYS):
 
 
 def subscription_ok(user_id):
-    """Проверяет: может ли мастер пользоваться ботом."""
     trial_until, paid_until = get_subscription(user_id)
     current = now().replace(tzinfo=None)
 
@@ -330,9 +329,19 @@ async def cmd_start(message: Message):
     role = get_role(message.from_user.id)
 
     if role == "groomer":
+        start_trial_if_needed(message.from_user.id)
+        trial_until, paid_until = get_subscription(message.from_user.id)
+
+        if paid_until:
+            status_text = f"\n✅ Подписка активна до {paid_until}"
+        elif trial_until:
+            status_text = f"\n🎁 Пробный период — до {trial_until} ({TRIAL_DAYS} дня)"
+        else:
+            status_text = ""
+
         await message.answer(
             f"С возвращением, {message.from_user.first_name}!\n\n"
-            "Ты вошёл как мастер. Используй кнопки ниже.",
+            f"Ты вошёл как мастер.{status_text}",
             reply_markup=main_kb,
         )
     elif role == "client":
@@ -350,14 +359,18 @@ async def cmd_start(message: Message):
 
 @dp.message(Command("reset"))
 async def cmd_reset(message: Message):
-    role = get_role(message.from_user.id)
-    if role == "groomer":
-        await message.answer("Клавиатура обновлена.", reply_markup=main_kb)
-    else:
-        await message.answer(
-            "Клавиатура очищена. Напиши /start, если хочешь выбрать роль заново.",
-            reply_markup=ReplyKeyboardRemove(),
-        )
+    # Удаляем роль — /start покажет выбор заново
+    conn = get_conn()
+    cur = conn.cursor()
+    placeholder = "%s" if USE_POSTGRES else "?"
+    cur.execute(f"DELETE FROM users WHERE user_id = {placeholder}", (message.from_user.id,))
+    conn.commit()
+    conn.close()
+
+    await message.answer(
+        "Роль сброшена. Напиши /start, чтобы выбрать заново.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
 
 
 @dp.message(F.text == "Я грумер")
@@ -368,23 +381,17 @@ async def choose_groomer(message: Message):
     trial_until, paid_until = get_subscription(message.from_user.id)
 
     if paid_until:
-        await message.answer(
-            f"Отлично! Теперь ты можешь добавлять клиентов.\n\n"
-            f"✅ Подписка активна до {paid_until}",
-            reply_markup=main_kb,
-        )
+        status_text = f"\n✅ Подписка активна до {paid_until}"
     elif trial_until:
-        await message.answer(
-            f"Отлично! Теперь ты можешь добавлять клиентов.\n\n"
-            f"🎁 Пробный период — до {trial_until} ({TRIAL_DAYS} дня)",
-            reply_markup=main_kb,
-        )
+        status_text = f"\n🎁 Пробный период — до {trial_until} ({TRIAL_DAYS} дня)"
     else:
-        await message.answer(
-            "Отлично! Теперь ты можешь добавлять клиентов.\n\n"
-            "Используй кнопки ниже или /add.",
-            reply_markup=main_kb,
-        )
+        status_text = ""
+
+    await message.answer(
+        f"Отлично! Теперь ты можешь добавлять клиентов.{status_text}\n\n"
+        "Используй кнопки ниже или /add.",
+        reply_markup=main_kb,
+    )
 
 
 @dp.message(F.text == "Я клиент")
@@ -448,7 +455,9 @@ async def cmd_status(message: Message):
         await message.answer(f"✅ Подписка активна до {until.strftime('%Y-%m-%d %H:%M')}")
     else:
         days_left = (until - now().replace(tzinfo=None)).days
-        await message.answer(f"🎁 Пробный период. Осталось {days_left} дн. до {until.strftime('%Y-%m-%d %H:%M')}")
+        await message.answer(
+            f"🎁 Пробный период. Осталось {days_left} дн. до {until.strftime('%Y-%m-%d %H:%M')}"
+        )
 
 
 @dp.message(Command("activate"))
@@ -512,9 +521,7 @@ async def handle_add(message: Message):
 
     ok, status, until = subscription_ok(message.from_user.id)
     if not ok:
-        await message.answer(
-            "⚠️ Пробный период закончился. Оплатите $5/мес: /pay"
-        )
+        await message.answer("⚠️ Пробный период закончился. Оплатите $5/мес: /pay")
         return
 
     try:
