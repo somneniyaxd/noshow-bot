@@ -3,6 +3,7 @@ import logging
 import os
 import sqlite3
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import psycopg2
 
@@ -18,12 +19,22 @@ from aiogram.types import (
 )
 
 # ============================================================
-# ТОКЕН и БАЗА
+# ТОКЕН, БАЗА, ЧАСОВОЙ ПОЯС
 # ============================================================
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "noshow.db")
 
+# Часовой пояс бота. По умолчанию — Минск.
+# Можно переопределить через переменную TIMEZONE на Railway.
+TIMEZONE = os.getenv("TIMEZONE", "Europe/Minsk")
+TZ = ZoneInfo(TIMEZONE)
+
 USE_POSTGRES = DATABASE_URL.startswith("postgres")
+
+
+def now():
+    """Текущее время в нужном часовом поясе."""
+    return datetime.now(TZ)
 
 
 # ============================================================
@@ -57,13 +68,8 @@ def init_db():
                 reschedule INTEGER DEFAULT 0
             )
         """)
-        # Добавляем колонки, если их нет (для старых баз)
         try:
             cur.execute("ALTER TABLE clients ADD COLUMN IF NOT EXISTS reschedule INTEGER DEFAULT 0")
-        except Exception:
-            pass
-        try:
-            cur.execute("ALTER TABLE clients ADD COLUMN IF NOT EXISTS cancelled INTEGER DEFAULT 0")
         except Exception:
             pass
         conn.commit()
@@ -149,8 +155,7 @@ def cleanup_old_records():
     conn = get_conn()
     cur = conn.cursor()
     placeholder = "%s" if USE_POSTGRES else "?"
-    now = datetime.now()
-    cutoff = (now - timedelta(days=1)).strftime("%Y-%m-%d %H:%M")
+    cutoff = (now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M")
     cur.execute(f"DELETE FROM clients WHERE visit_time < {placeholder}", (cutoff,))
     deleted = cur.rowcount
     conn.commit()
@@ -182,7 +187,7 @@ main_kb = ReplyKeyboardMarkup(
 
 client_kb = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Да, буду на груминге", callback_data="confirm")],
+        [InlineKeyboardButton(text="✅ Да, буду на визите", callback_data="confirm")],
         [InlineKeyboardButton(text="📞 Связаться для перезаписи", callback_data="reschedule")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")],
     ]
@@ -190,7 +195,7 @@ client_kb = InlineKeyboardMarkup(
 
 
 # ============================================================
-# Команды и выбор роли
+# Команды и роли
 # ============================================================
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -199,7 +204,7 @@ async def cmd_start(message: Message):
     if role == "groomer":
         await message.answer(
             f"С возвращением, {message.from_user.first_name}!\n\n"
-            "Ты вошёл как грумер. Используй кнопки ниже.",
+            "Ты вошёл как мастер. Используй кнопки ниже.",
             reply_markup=main_kb,
         )
     elif role == "client":
@@ -239,7 +244,7 @@ async def choose_client(message: Message):
 @dp.message(Command("add"))
 async def cmd_add(message: Message):
     if get_role(message.from_user.id) != "groomer":
-        await message.answer("Эта команда только для грумеров.")
+        await message.answer("Эта команда только для мастеров.")
         return
     await message.answer(
         "Отправь данные клиента в формате:\n\n"
@@ -249,7 +254,7 @@ async def cmd_add(message: Message):
         "Где:\n"
         "• Барсик — имя клиента\n"
         "• 473980999 — его Telegram ID (узнать через @userinfobot)\n"
-        "• 2026-09-18 15:30 — дата и время визита\n\n"
+        "• 2026-09-18 15:30 — дата и время визита (по твоему часовому поясу)\n\n"
         "Дата обязательно в будущем!"
     )
 
@@ -261,7 +266,12 @@ async def handle_add(message: Message):
     try:
         parts = [p.strip() for p in message.text.split(",")]
         name, chat_id, visit_time = parts[0], int(parts[1]), parts[2]
-        datetime.strptime(visit_time, "%Y-%m-%d %H:%M")
+        visit_dt = datetime.strptime(visit_time, "%Y-%m-%d %H:%M")
+
+        # Проверка: не в прошлом
+        if visit_dt < now().replace(tzinfo=None):
+            await message.answer("❌ Дата уже прошла. Укажи будущее время.")
+            return
 
         add_client(message.from_user.id, name, chat_id, visit_time)
         await message.answer(f"✅ Запись для {name} на {visit_time} сохранена.")
@@ -270,7 +280,7 @@ async def handle_add(message: Message):
 
 
 # ============================================================
-# Кнопки клиента: подтвердить / перезапись / отмена
+# Кнопки клиента
 # ============================================================
 @dp.callback_query(F.data == "confirm")
 async def cb_confirm(callback: CallbackQuery):
@@ -287,7 +297,7 @@ async def cb_confirm(callback: CallbackQuery):
     conn.close()
 
     if changed:
-        await callback.message.edit_text("✅ Спасибо! Ждём вас на груминге.")
+        await callback.message.edit_text("✅ Спасибо! Ждём вас на визите.")
     else:
         await callback.message.edit_text("У вас нет активных записей.")
     await callback.answer()
@@ -321,7 +331,7 @@ async def cb_reschedule(callback: CallbackQuery):
     conn.close()
 
     await callback.message.edit_text(
-        "📞 Понял! Передал грумеру — он свяжется с вами для перезаписи."
+        "📞 Понял! Передал мастеру — он свяжется с вами для перезаписи."
     )
     await callback.answer()
 
@@ -333,7 +343,7 @@ async def cb_reschedule(callback: CallbackQuery):
                 "Свяжитесь с клиентом.",
             )
         except Exception as e:
-            print(f"[ПЕРЕЗАПИСЬ] Не удалось уведомить грумера {groomer_id}: {e}")
+            print(f"[ПЕРЕЗАПИСЬ] Не удалось уведомить {groomer_id}: {e}")
 
 
 @dp.callback_query(F.data == "cancel")
@@ -363,7 +373,7 @@ async def cb_cancel(callback: CallbackQuery):
     conn.commit()
     conn.close()
 
-    await callback.message.edit_text("❌ Запись отменена. Грумер уже знает.")
+    await callback.message.edit_text("❌ Запись отменена. Мастер уже знает.")
     await callback.answer()
 
     for cid, groomer_id, name, visit_time in rows:
@@ -374,7 +384,7 @@ async def cb_cancel(callback: CallbackQuery):
                 "Слот освободился.",
             )
         except Exception as e:
-            print(f"[ОТМЕНА] Не удалось уведомить грумера {groomer_id}: {e}")
+            print(f"[ОТМЕНА] Не удалось уведомить {groomer_id}: {e}")
 
 
 # ============================================================
@@ -383,7 +393,7 @@ async def cb_cancel(callback: CallbackQuery):
 @dp.message(Command("list"))
 async def cmd_list(message: Message):
     if get_role(message.from_user.id) != "groomer":
-        await message.answer("Эта команда только для грумеров.")
+        await message.answer("Эта команда только для мастеров.")
         return
     rows = get_clients(message.from_user.id)
     if not rows:
@@ -414,19 +424,19 @@ async def btn_add(message: Message):
 
 
 # ============================================================
-# Автонапоминания
+# Автонапоминания (время — по часовому поясу TZ)
 # ============================================================
 async def reminder_loop():
     while True:
         try:
             conn = get_conn()
             cur = conn.cursor()
-            now = datetime.now()
+            current = now()
 
             ph = "%s" if USE_POSTGRES else "?"
 
             # За 3 часа
-            target_3h = now + timedelta(hours=3)
+            target_3h = current + timedelta(hours=3)
             cur.execute(
                 f"SELECT id, name, chat_id, visit_time FROM clients "
                 f"WHERE confirmed = 0 AND cancelled = 0 AND visit_time BETWEEN {ph} AND {ph}",
@@ -436,7 +446,7 @@ async def reminder_loop():
             rows_3h = cur.fetchall()
 
             # За 30 минут
-            target_30m = now + timedelta(minutes=30)
+            target_30m = current + timedelta(minutes=30)
             cur.execute(
                 f"SELECT id, name, chat_id, visit_time FROM clients "
                 f"WHERE confirmed = 0 AND cancelled = 0 AND visit_time BETWEEN {ph} AND {ph}",
@@ -446,16 +456,16 @@ async def reminder_loop():
             rows_30m = cur.fetchall()
             conn.close()
 
-            print(f"[{now.strftime('%H:%M')}] За 3ч: {len(rows_3h)} | За 30мин: {len(rows_30m)}")
+            print(f"[{current.strftime('%H:%M')}] За 3ч: {len(rows_3h)} | За 30мин: {len(rows_30m)}")
 
             for cid, name, chat_id, visit_time in rows_3h:
                 try:
                     visit_dt = datetime.strptime(visit_time, "%Y-%m-%d %H:%M")
-                    day_word = "сегодня" if visit_dt.date() == now.date() else "завтра"
+                    day_word = "сегодня" if visit_dt.date() == current.date() else "завтра"
                     time_str = visit_dt.strftime("%H:%M")
                     await bot.send_message(
                         chat_id,
-                        f"Здравствуйте! Напоминаем, что {day_word} у вас запись на груминг в {time_str}.\n\n"
+                        f"Здравствуйте! Напоминаем, что {day_word} у вас запись на визит в {time_str}.\n\n"
                         "Если не сможете прийти — предупредите, пожалуйста."
                     )
                     print(f"[3ч OK] {name} ({chat_id})")
@@ -467,7 +477,7 @@ async def reminder_loop():
                     time_str = datetime.strptime(visit_time, "%Y-%m-%d %H:%M").strftime("%H:%M")
                     await bot.send_message(
                         chat_id,
-                        f"Здравствуйте! Ваша запись на груминг через полчаса — в {time_str}.\n\n"
+                        f"Здравствуйте! Ваша запись на визит через полчаса — в {time_str}.\n\n"
                         "Подтвердите, пожалуйста, визит:",
                         reply_markup=client_kb,
                     )
@@ -500,7 +510,7 @@ async def main():
     init_db()
     asyncio.create_task(reminder_loop())
     asyncio.create_task(cleanup_loop())
-    print(f"Бот запущен. База: {'PostgreSQL' if USE_POSTGRES else 'SQLite'}")
+    print(f"Бот запущен. База: {'PostgreSQL' if USE_POSTGRES else 'SQLite'}. Часовой пояс: {TIMEZONE}")
     await dp.start_polling(bot)
 
 
