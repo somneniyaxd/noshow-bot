@@ -20,25 +20,31 @@ from aiogram.types import (
 )
 
 # ============================================================
-# ТОКЕН, БАЗА, ЧАСОВОЙ ПОЯС
+# КОНФИГ
 # ============================================================
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "noshow.db")
 
-# Часовой пояс бота (по умолчанию — Минск)
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Minsk")
 TZ = ZoneInfo(TIMEZONE)
+
+ADMIN_ID = 473980999  # Твой Telegram ID для админ-команд
+
+TRIAL_DAYS = 3      # Пробный период
+PAID_DAYS = 30      # Период после оплаты
+
+# Ссылка на оплату (заменишь, когда получишь от bePaid)
+PAYMENT_LINK = "https://example.com/pay"  # ЗАГЛУШКА
 
 USE_POSTGRES = DATABASE_URL.startswith("postgres")
 
 
 def now():
-    """Текущее время в нужном часовом поясе."""
     return datetime.now(TZ)
 
 
 # ============================================================
-# Работа с базой
+# БАЗА
 # ============================================================
 def get_conn():
     if USE_POSTGRES:
@@ -68,6 +74,13 @@ def init_db():
                 reschedule INTEGER DEFAULT 0
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                user_id BIGINT PRIMARY KEY,
+                trial_until TEXT,
+                paid_until TEXT
+            )
+        """)
         try:
             cur.execute("ALTER TABLE clients ADD COLUMN IF NOT EXISTS reschedule INTEGER DEFAULT 0")
         except Exception:
@@ -90,6 +103,13 @@ def init_db():
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 role TEXT
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                user_id INTEGER PRIMARY KEY,
+                trial_until TEXT,
+                paid_until TEXT
             )
         """)
         conn.commit()
@@ -124,17 +144,99 @@ def get_role(user_id):
     return row[0] if row else None
 
 
-def add_client(groomer_id, name, chat_id, visit_time):
+def start_trial_if_needed(user_id):
+    """Если мастер новый — ставим trial_until."""
     conn = get_conn()
     cur = conn.cursor()
     placeholder = "%s" if USE_POSTGRES else "?"
-    cur.execute(
-        f"INSERT INTO clients (groomer_id, name, chat_id, visit_time) "
-        f"VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})",
-        (groomer_id, name, chat_id, visit_time),
-    )
+
+    cur.execute(f"SELECT trial_until, paid_until FROM subscriptions WHERE user_id = {placeholder}", (user_id,))
+    row = cur.fetchone()
+
+    if row is None:
+        # Новая подписка — стартуем триал
+        trial_until = (now() + timedelta(days=TRIAL_DAYS)).strftime("%Y-%m-%d %H:%M")
+        if USE_POSTGRES:
+            cur.execute(
+                "INSERT INTO subscriptions (user_id, trial_until) VALUES (%s, %s)",
+                (user_id, trial_until),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO subscriptions (user_id, trial_until) VALUES (?, ?)",
+                (user_id, trial_until),
+            )
+        conn.commit()
+
+    conn.close()
+
+
+def get_subscription(user_id):
+    """Возвращает (trial_until, paid_until) — даты или None."""
+    conn = get_conn()
+    cur = conn.cursor()
+    placeholder = "%s" if USE_POSTGRES else "?"
+    cur.execute(f"SELECT trial_until, paid_until FROM subscriptions WHERE user_id = {placeholder}", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row if row else (None, None)
+
+
+def set_paid_until(user_id, days=PAID_DAYS):
+    """Активирует подписку на N дней."""
+    conn = get_conn()
+    cur = conn.cursor()
+    placeholder = "%s" if USE_POSTGRES else "?"
+
+    paid_until = (now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+
+    # Проверяем, есть ли уже запись
+    cur.execute(f"SELECT user_id FROM subscriptions WHERE user_id = {placeholder}", (user_id,))
+    exists = cur.fetchone()
+
+    if exists:
+        cur.execute(
+            f"UPDATE subscriptions SET paid_until = {placeholder} WHERE user_id = {placeholder}",
+            (paid_until, user_id),
+        )
+    else:
+        if USE_POSTGRES:
+            cur.execute(
+                "INSERT INTO subscriptions (user_id, paid_until) VALUES (%s, %s)",
+                (user_id, paid_until),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO subscriptions (user_id, paid_until) VALUES (?, ?)",
+                (user_id, paid_until),
+            )
     conn.commit()
     conn.close()
+    return paid_until
+
+
+def subscription_ok(user_id):
+    """Проверяет: может ли мастер пользоваться ботом."""
+    trial_until, paid_until = get_subscription(user_id)
+    current = now().replace(tzinfo=None)
+
+    if paid_until:
+        try:
+            paid_dt = datetime.strptime(paid_until, "%Y-%m-%d %H:%M")
+            if paid_dt > current:
+                return True, "paid", paid_dt
+        except Exception:
+            pass
+
+    if trial_until:
+        try:
+            trial_dt = datetime.strptime(trial_until, "%Y-%m-%d %H:%M")
+            if trial_dt > current:
+                return True, "trial", trial_dt
+        except Exception:
+            pass
+
+    return False, "expired", None
 
 
 def get_clients(groomer_id):
@@ -151,6 +253,19 @@ def get_clients(groomer_id):
     return rows
 
 
+def add_client(groomer_id, name, chat_id, visit_time):
+    conn = get_conn()
+    cur = conn.cursor()
+    placeholder = "%s" if USE_POSTGRES else "?"
+    cur.execute(
+        f"INSERT INTO clients (groomer_id, name, chat_id, visit_time) "
+        f"VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})",
+        (groomer_id, name, chat_id, visit_time),
+    )
+    conn.commit()
+    conn.close()
+
+
 def cleanup_old_records():
     conn = get_conn()
     cur = conn.cursor()
@@ -164,7 +279,7 @@ def cleanup_old_records():
 
 
 # ============================================================
-# Бот и клавиатуры
+# БОТ
 # ============================================================
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -181,6 +296,7 @@ main_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📋 Мои записи")],
         [KeyboardButton(text="➕ Добавить запись")],
+        [KeyboardButton(text="💳 Подписка")],
     ],
     resize_keyboard=True,
 )
@@ -195,7 +311,7 @@ client_kb = InlineKeyboardMarkup(
 
 
 # ============================================================
-# Команды и роли
+# КОМАНДЫ
 # ============================================================
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -235,8 +351,12 @@ async def cmd_reset(message: Message):
 @dp.message(F.text == "Я грумер")
 async def choose_groomer(message: Message):
     set_role(message.from_user.id, "groomer")
+    start_trial_if_needed(message.from_user.id)
+
+    trial_until, paid_until = get_subscription(message.from_user.id)
     await message.answer(
         "Отлично! Теперь ты можешь добавлять клиентов.\n\n"
+        f"🎁 Пробный период — до {trial_until} (3 дня)\n\n"
         "Используй кнопки ниже или /add.",
         reply_markup=main_kb,
     )
@@ -251,14 +371,102 @@ async def choose_client(message: Message):
     )
 
 
+@dp.message(Command("pay"))
+async def cmd_pay(message: Message):
+    if get_role(message.from_user.id) != "groomer":
+        return
+    await message.answer(
+        "💳 Оплата подписки — $5/мес.\n\n"
+        f"Ссылка на оплату:\n{PAYMENT_LINK}\n\n"
+        "После оплаты напишите нам — активируем в течение часа."
+    )
+
+
+@dp.message(F.text == "💳 Подписка")
+async def btn_subscription(message: Message):
+    if get_role(message.from_user.id) != "groomer":
+        return
+
+    ok, status, until = subscription_ok(message.from_user.id)
+
+    if not ok:
+        await message.answer(
+            "⚠️ Ваш пробный период закончился.\n\n"
+            "Чтобы продолжить пользоваться ботом — оплатите $5/мес.\n"
+            f"Ссылка: {PAYMENT_LINK}\n\n"
+            "После оплаты напишите нам — активируем в течение часа."
+        )
+        return
+
+    if status == "paid":
+        await message.answer(
+            f"✅ Подписка активна до {until.strftime('%Y-%m-%d %H:%M')}\n\n"
+            "Спасибо, что пользуетесь RemindMe!"
+        )
+    else:
+        days_left = (until - now().replace(tzinfo=None)).days
+        await message.answer(
+            f"🎁 Пробный период до {until.strftime('%Y-%m-%d %H:%M')}\n"
+            f"Осталось: {days_left} дн.\n\n"
+            f"Чтобы продлить после окончания — $5/мес:\n{PAYMENT_LINK}"
+        )
+
+
+@dp.message(Command("status"))
+async def cmd_status(message: Message):
+    if get_role(message.from_user.id) != "groomer":
+        return
+    ok, status, until = subscription_ok(message.from_user.id)
+    if not ok:
+        await message.answer("⚠️ Подписка неактивна. Используйте /pay.")
+    elif status == "paid":
+        await message.answer(f"✅ Подписка активна до {until.strftime('%Y-%m-%d %H:%M')}")
+    else:
+        days_left = (until - now().replace(tzinfo=None)).days
+        await message.answer(f"🎁 Пробный период. Осталось {days_left} дн. до {until.strftime('%Y-%m-%d %H:%M')}")
+
+
+@dp.message(Command("activate"))
+async def cmd_activate(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    try:
+        parts = message.text.split()
+        if len(parts) != 2:
+            raise ValueError()
+        user_id = int(parts[1])
+        paid_until = set_paid_until(user_id)
+        await message.answer(f"✅ Подписка активирована для {user_id} до {paid_until}.")
+        try:
+            await bot.send_message(
+                user_id,
+                "✅ Ваша подписка RemindMe активирована на 30 дней. Спасибо, что с нами!",
+            )
+        except Exception:
+            pass
+    except Exception:
+        await message.answer("Формат: /activate 473980999")
+
+
 # ============================================================
-# Добавление записи
+# ДОБАВЛЕНИЕ ЗАПИСИ (с проверкой подписки)
 # ============================================================
 @dp.message(Command("add"))
 async def cmd_add(message: Message):
     if get_role(message.from_user.id) != "groomer":
         await message.answer("Эта команда только для мастеров.")
         return
+
+    ok, status, until = subscription_ok(message.from_user.id)
+    if not ok:
+        await message.answer(
+            "⚠️ Пробный период закончился.\n\n"
+            f"Оплатите $5/мес: {PAYMENT_LINK}\n\n"
+            "После оплаты напишите нам — активируем в течение часа."
+        )
+        return
+
     await message.answer(
         "Отправь данные клиента в формате:\n\n"
         "Имя, chat_id, ГГГГ-ММ-ДД ЧЧ:ММ\n\n"
@@ -267,7 +475,7 @@ async def cmd_add(message: Message):
         "Где:\n"
         "• Барсик — имя клиента\n"
         "• 473980999 — его Telegram ID (узнать через @userinfobot)\n"
-        "• 2026-09-18 15:30 — дата и время визита (по твоему часовому поясу)\n\n"
+        "• 2026-09-18 15:30 — дата и время визита\n\n"
         "Дата обязательно в будущем!"
     )
 
@@ -276,6 +484,14 @@ async def cmd_add(message: Message):
 async def handle_add(message: Message):
     if get_role(message.from_user.id) != "groomer":
         return
+
+    ok, status, until = subscription_ok(message.from_user.id)
+    if not ok:
+        await message.answer(
+            "⚠️ Пробный период закончился. Оплатите $5/мес: /pay"
+        )
+        return
+
     try:
         parts = [p.strip() for p in message.text.split(",")]
         name, chat_id, visit_time = parts[0], int(parts[1]), parts[2]
@@ -292,7 +508,7 @@ async def handle_add(message: Message):
 
 
 # ============================================================
-# Кнопки клиента
+# КНОПКИ КЛИЕНТА
 # ============================================================
 @dp.callback_query(F.data == "confirm")
 async def cb_confirm(callback: CallbackQuery):
@@ -400,7 +616,7 @@ async def cb_cancel(callback: CallbackQuery):
 
 
 # ============================================================
-# Список записей
+# СПИСОК ЗАПИСЕЙ
 # ============================================================
 @dp.message(Command("list"))
 async def cmd_list(message: Message):
@@ -436,7 +652,7 @@ async def btn_add(message: Message):
 
 
 # ============================================================
-# Автонапоминания
+# НАПОМИНАНИЯ
 # ============================================================
 async def reminder_loop():
     while True:
@@ -513,7 +729,7 @@ async def cleanup_loop():
 
 
 # ============================================================
-# Запуск
+# ЗАПУСК
 # ============================================================
 async def main():
     logging.basicConfig(level=logging.INFO)
