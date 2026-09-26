@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import secrets
 import sqlite3
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -23,6 +24,7 @@ from aiogram.types import (
 # КОНФИГ
 # ============================================================
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+BOT_USERNAME = "noshow_killer_bot"  # без @
 DATABASE_URL = os.getenv("DATABASE_URL", "noshow.db")
 
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Minsk")
@@ -46,7 +48,7 @@ REMINDER_PRESETS = [
     (1440, "За 24 часа"),
 ]
 
-PAYMENT_LINK = "https://example.com/pay"
+PAYMENT_LINK = "https://example.com/pay"  # ЗАГЛУШКА
 
 USE_POSTGRES = DATABASE_URL.startswith("postgres")
 
@@ -71,6 +73,10 @@ def format_minutes(minutes):
     return f"{hours} ч {mins} мин"
 
 
+def gen_token():
+    return secrets.token_urlsafe(8).replace("-", "").replace("_", "")[:10]
+
+
 # ============================================================
 # БАЗА
 # ============================================================
@@ -92,9 +98,19 @@ def init_db():
             )
         """)
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS customers (
+                id SERIAL PRIMARY KEY,
+                groomer_id BIGINT,
+                name TEXT,
+                chat_id BIGINT,
+                invite_token TEXT UNIQUE
+            )
+        """)
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS clients (
                 id SERIAL PRIMARY KEY,
                 groomer_id BIGINT,
+                customer_id INTEGER,
                 name TEXT,
                 chat_id BIGINT,
                 visit_time TEXT,
@@ -114,6 +130,7 @@ def init_db():
         """)
         for col_sql in [
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS reminder_minutes INTEGER DEFAULT 30",
+            "ALTER TABLE clients ADD COLUMN IF NOT EXISTS customer_id INTEGER",
             "ALTER TABLE clients ADD COLUMN IF NOT EXISTS notified INTEGER DEFAULT 0",
             "ALTER TABLE clients ADD COLUMN IF NOT EXISTS notified_silent INTEGER DEFAULT 0",
             "ALTER TABLE clients ADD COLUMN IF NOT EXISTS reschedule INTEGER DEFAULT 0",
@@ -125,9 +142,26 @@ def init_db():
         conn.commit()
     else:
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                role TEXT,
+                reminder_minutes INTEGER DEFAULT 30
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS customers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                groomer_id INTEGER,
+                name TEXT,
+                chat_id INTEGER,
+                invite_token TEXT UNIQUE
+            )
+        """)
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS clients (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 groomer_id INTEGER,
+                customer_id INTEGER,
                 name TEXT,
                 chat_id INTEGER,
                 visit_time TEXT,
@@ -136,13 +170,6 @@ def init_db():
                 reschedule INTEGER DEFAULT 0,
                 notified INTEGER DEFAULT 0,
                 notified_silent INTEGER DEFAULT 0
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                role TEXT,
-                reminder_minutes INTEGER DEFAULT 30
             )
         """)
         cur.execute("""
@@ -156,6 +183,9 @@ def init_db():
     conn.close()
 
 
+# ============================================================
+# USERS
+# ============================================================
 def set_role(user_id, role):
     conn = get_conn()
     cur = conn.cursor()
@@ -166,10 +196,7 @@ def set_role(user_id, role):
             (user_id, role),
         )
     else:
-        cur.execute(
-            "INSERT OR REPLACE INTO users (user_id, role) VALUES (?, ?)",
-            (user_id, role),
-        )
+        cur.execute("INSERT OR REPLACE INTO users (user_id, role) VALUES (?, ?)", (user_id, role))
     conn.commit()
     conn.close()
 
@@ -177,8 +204,8 @@ def set_role(user_id, role):
 def get_role(user_id):
     conn = get_conn()
     cur = conn.cursor()
-    placeholder = "%s" if USE_POSTGRES else "?"
-    cur.execute(f"SELECT role FROM users WHERE user_id = {placeholder}", (user_id,))
+    ph = "%s" if USE_POSTGRES else "?"
+    cur.execute(f"SELECT role FROM users WHERE user_id = {ph}", (user_id,))
     row = cur.fetchone()
     conn.close()
     return row[0] if row else None
@@ -187,9 +214,9 @@ def get_role(user_id):
 def get_reminder_minutes(user_id):
     conn = get_conn()
     cur = conn.cursor()
-    placeholder = "%s" if USE_POSTGRES else "?"
+    ph = "%s" if USE_POSTGRES else "?"
     try:
-        cur.execute(f"SELECT reminder_minutes FROM users WHERE user_id = {placeholder}", (user_id,))
+        cur.execute(f"SELECT reminder_minutes FROM users WHERE user_id = {ph}", (user_id,))
         row = cur.fetchone()
         result = row[0] if row and row[0] else DEFAULT_REMINDER_MINUTES
     except Exception:
@@ -201,25 +228,21 @@ def get_reminder_minutes(user_id):
 def set_reminder_minutes(user_id, minutes):
     conn = get_conn()
     cur = conn.cursor()
-    placeholder = "%s" if USE_POSTGRES else "?"
-    cur.execute(
-        f"UPDATE users SET reminder_minutes = {placeholder} WHERE user_id = {placeholder}",
-        (minutes, user_id),
-    )
+    ph = "%s" if USE_POSTGRES else "?"
+    cur.execute(f"UPDATE users SET reminder_minutes = {ph} WHERE user_id = {ph}", (minutes, user_id))
     conn.commit()
     conn.close()
 
 
+# ============================================================
+# SUBSCRIPTIONS
+# ============================================================
 def start_trial_if_needed(user_id):
     conn = get_conn()
     cur = conn.cursor()
-    placeholder = "%s" if USE_POSTGRES else "?"
-    cur.execute(
-        f"SELECT trial_until, paid_until FROM subscriptions WHERE user_id = {placeholder}",
-        (user_id,),
-    )
+    ph = "%s" if USE_POSTGRES else "?"
+    cur.execute(f"SELECT trial_until, paid_until FROM subscriptions WHERE user_id = {ph}", (user_id,))
     row = cur.fetchone()
-
     if row is None:
         trial_until = (now() + timedelta(days=TRIAL_DAYS)).strftime("%Y-%m-%d %H:%M")
         if USE_POSTGRES:
@@ -227,13 +250,12 @@ def start_trial_if_needed(user_id):
         else:
             cur.execute("INSERT INTO subscriptions (user_id, trial_until) VALUES (?, ?)", (user_id, trial_until))
         conn.commit()
-        print(f"[TRIAL] Создан триал для {user_id} до {trial_until}")
     else:
         trial_until, paid_until = row
         if not trial_until and not paid_until:
             new_trial = (now() + timedelta(days=TRIAL_DAYS)).strftime("%Y-%m-%d %H:%M")
             cur.execute(
-                f"UPDATE subscriptions SET trial_until = {placeholder} WHERE user_id = {placeholder}",
+                f"UPDATE subscriptions SET trial_until = {ph} WHERE user_id = {ph}",
                 (new_trial, user_id),
             )
             conn.commit()
@@ -243,11 +265,8 @@ def start_trial_if_needed(user_id):
 def get_subscription(user_id):
     conn = get_conn()
     cur = conn.cursor()
-    placeholder = "%s" if USE_POSTGRES else "?"
-    cur.execute(
-        f"SELECT trial_until, paid_until FROM subscriptions WHERE user_id = {placeholder}",
-        (user_id,),
-    )
+    ph = "%s" if USE_POSTGRES else "?"
+    cur.execute(f"SELECT trial_until, paid_until FROM subscriptions WHERE user_id = {ph}", (user_id,))
     row = cur.fetchone()
     conn.close()
     return row if row else (None, None)
@@ -256,17 +275,12 @@ def get_subscription(user_id):
 def set_paid_until(user_id, days=PAID_DAYS):
     conn = get_conn()
     cur = conn.cursor()
-    placeholder = "%s" if USE_POSTGRES else "?"
+    ph = "%s" if USE_POSTGRES else "?"
     paid_until = (now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
-
-    cur.execute(f"SELECT user_id FROM subscriptions WHERE user_id = {placeholder}", (user_id,))
+    cur.execute(f"SELECT user_id FROM subscriptions WHERE user_id = {ph}", (user_id,))
     exists = cur.fetchone()
-
     if exists:
-        cur.execute(
-            f"UPDATE subscriptions SET paid_until = {placeholder} WHERE user_id = {placeholder}",
-            (paid_until, user_id),
-        )
+        cur.execute(f"UPDATE subscriptions SET paid_until = {ph} WHERE user_id = {ph}", (paid_until, user_id))
     else:
         if USE_POSTGRES:
             cur.execute("INSERT INTO subscriptions (user_id, paid_until) VALUES (%s, %s)", (user_id, paid_until))
@@ -280,7 +294,6 @@ def set_paid_until(user_id, days=PAID_DAYS):
 def subscription_ok(user_id):
     trial_until, paid_until = get_subscription(user_id)
     current = now().replace(tzinfo=None)
-
     if paid_until:
         try:
             paid_dt = datetime.strptime(paid_until, "%Y-%m-%d %H:%M")
@@ -288,7 +301,6 @@ def subscription_ok(user_id):
                 return True, "paid", paid_dt
         except Exception:
             pass
-
     if trial_until:
         try:
             trial_dt = datetime.strptime(trial_until, "%Y-%m-%d %H:%M")
@@ -296,7 +308,6 @@ def subscription_ok(user_id):
                 return True, "trial", trial_dt
         except Exception:
             pass
-
     return False, "expired", None
 
 
@@ -306,24 +317,85 @@ def days_left_ru(until_dt):
     days = total_seconds // 86400
     if total_seconds % 86400 > 0:
         days += 1
-
     if days % 10 == 1 and days % 100 != 11:
         word = "день"
     elif days % 10 in (2, 3, 4) and days % 100 not in (12, 13, 14):
         word = "дня"
     else:
         word = "дней"
-
     return f"{days} {word}"
 
 
+# ============================================================
+# CUSTOMERS (клиенты мастера)
+# ============================================================
+def find_customer(groomer_id, name):
+    """Ищет клиента мастера по имени (без учёта регистра)."""
+    conn = get_conn()
+    cur = conn.cursor()
+    ph = "%s" if USE_POSTGRES else "?"
+    cur.execute(
+        f"SELECT id, name, chat_id, invite_token FROM customers "
+        f"WHERE groomer_id = {ph} AND LOWER(name) = LOWER({ph})",
+        (groomer_id, name),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row  # (id, name, chat_id, invite_token) или None
+
+
+def create_customer(groomer_id, name):
+    """Создаёт клиента + генерирует токен."""
+    token = gen_token()
+    conn = get_conn()
+    cur = conn.cursor()
+    if USE_POSTGRES:
+        cur.execute(
+            "INSERT INTO customers (groomer_id, name, invite_token) VALUES (%s, %s, %s) RETURNING id",
+            (groomer_id, name, token),
+        )
+        cid = cur.fetchone()[0]
+    else:
+        cur.execute(
+            "INSERT INTO customers (groomer_id, name, invite_token) VALUES (?, ?, ?)",
+            (groomer_id, name, token),
+        )
+        cid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return cid, token
+
+
+def get_customer_by_token(token):
+    conn = get_conn()
+    cur = conn.cursor()
+    ph = "%s" if USE_POSTGRES else "?"
+    cur.execute(f"SELECT id, groomer_id, name FROM customers WHERE invite_token = {ph}", (token,))
+    row = cur.fetchone()
+    conn.close()
+    return row  # (id, groomer_id, name) или None
+
+
+def link_customer_chat(customer_id, chat_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    ph = "%s" if USE_POSTGRES else "?"
+    cur.execute(f"UPDATE customers SET chat_id = {ph} WHERE id = {ph}", (chat_id, customer_id))
+    cur.execute(f"UPDATE clients SET chat_id = {ph} WHERE customer_id = {ph}", (chat_id, customer_id))
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+# CLIENTS (записи)
+# ============================================================
 def get_clients(groomer_id):
     conn = get_conn()
     cur = conn.cursor()
-    placeholder = "%s" if USE_POSTGRES else "?"
+    ph = "%s" if USE_POSTGRES else "?"
     cur.execute(
-        f"SELECT id, name, visit_time, confirmed, cancelled, reschedule FROM clients "
-        f"WHERE groomer_id = {placeholder} ORDER BY visit_time",
+        f"SELECT id, name, visit_time, confirmed, cancelled, reschedule, chat_id, customer_id FROM clients "
+        f"WHERE groomer_id = {ph} ORDER BY visit_time",
         (groomer_id,),
     )
     rows = cur.fetchall()
@@ -331,14 +403,14 @@ def get_clients(groomer_id):
     return rows
 
 
-def add_client(groomer_id, name, chat_id, visit_time):
+def add_client(groomer_id, customer_id, name, chat_id, visit_time):
     conn = get_conn()
     cur = conn.cursor()
-    placeholder = "%s" if USE_POSTGRES else "?"
+    ph = "%s" if USE_POSTGRES else "?"
     cur.execute(
-        f"INSERT INTO clients (groomer_id, name, chat_id, visit_time) "
-        f"VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder})",
-        (groomer_id, name, chat_id, visit_time),
+        f"INSERT INTO clients (groomer_id, customer_id, name, chat_id, visit_time) "
+        f"VALUES ({ph}, {ph}, {ph}, {ph}, {ph})",
+        (groomer_id, customer_id, name, chat_id, visit_time),
     )
     conn.commit()
     conn.close()
@@ -347,9 +419,9 @@ def add_client(groomer_id, name, chat_id, visit_time):
 def cleanup_old_records():
     conn = get_conn()
     cur = conn.cursor()
-    placeholder = "%s" if USE_POSTGRES else "?"
+    ph = "%s" if USE_POSTGRES else "?"
     cutoff = (now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M")
-    cur.execute(f"DELETE FROM clients WHERE visit_time < {placeholder}", (cutoff,))
+    cur.execute(f"DELETE FROM clients WHERE visit_time < {ph}", (cutoff,))
     deleted = cur.rowcount
     conn.commit()
     conn.close()
@@ -363,10 +435,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 role_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="Я мастер")],
-        [KeyboardButton(text="Я клиент")],
-    ],
+    keyboard=[[KeyboardButton(text="Я мастер")], [KeyboardButton(text="Я клиент")]],
     resize_keyboard=True,
 )
 
@@ -380,6 +449,11 @@ main_kb = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+cancel_kb = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="❌ Отмена")]],
+    resize_keyboard=True,
+)
+
 client_kb = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="✅ Да, буду", callback_data="confirm")],
@@ -390,23 +464,56 @@ client_kb = InlineKeyboardMarkup(
 
 
 def reminder_settings_kb():
-    rows = []
-    for minutes, label in REMINDER_PRESETS:
-        rows.append([InlineKeyboardButton(text=label, callback_data=f"remind_{minutes}")])
+    rows = [[InlineKeyboardButton(text=label, callback_data=f"remind_{m}")] for m, label in REMINDER_PRESETS]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+# Хранилище диалогов (в памяти)
+# {user_id: {"step": "name"/"time", "name": "...", "customer_id": ..., "chat_id": ...}}
+dialog_state = {}
+
+
 # ============================================================
-# КОМАНДЫ
+# /start и роли
 # ============================================================
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    role = get_role(message.from_user.id)
+    # Проверяем, есть ли deep-link (ссылка-приглашение)
+    args = message.text.split()
+    if len(args) > 1 and args[1].startswith("visit_"):
+        token = args[1].replace("visit_", "")
+        customer = get_customer_by_token(token)
+        if customer:
+            cid, groomer_id, name = customer
+            link_customer_chat(cid, message.from_user.id)
 
+            # Уведомляем мастера
+            try:
+                await bot.send_message(
+                    groomer_id,
+                    f"✅ {name} подключился. Теперь напоминания будут приходить автоматически.",
+                )
+            except Exception as e:
+                print(f"[LINK] Не удалось уведомить {groomer_id}: {e}")
+
+            # Клиенту
+            set_role(message.from_user.id, "client")
+            await message.answer(
+                f"Здравствуйте, {name}! 👋\n\n"
+                "Вы подключены к RemindMe. За день до визита мастер добавит вас — "
+                "и напоминание придёт автоматически.",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            return
+        else:
+            await message.answer("Ссылка недействительна. Попросите мастера отправить новую.")
+            return
+
+    # Обычный /start
+    role = get_role(message.from_user.id)
     if role == "groomer":
         start_trial_if_needed(message.from_user.id)
         trial_until, paid_until = get_subscription(message.from_user.id)
-
         if paid_until:
             paid_dt = datetime.strptime(paid_until, "%Y-%m-%d %H:%M")
             status_text = f"\n✅ Подписка активна ещё {days_left_ru(paid_dt)}"
@@ -415,7 +522,6 @@ async def cmd_start(message: Message):
             status_text = f"\n🎁 Пробный период — осталось {days_left_ru(trial_dt)}"
         else:
             status_text = ""
-
         await message.answer(
             f"С возвращением, {message.from_user.first_name}!\n\n"
             f"Ты вошёл как мастер.{status_text}",
@@ -423,13 +529,12 @@ async def cmd_start(message: Message):
         )
     elif role == "client":
         await message.answer(
-            "Ты в режиме клиента. Всё в порядке — жди напоминания о визите.",
+            "Ты в режиме клиента. Жди напоминания о визите.",
             reply_markup=ReplyKeyboardRemove(),
         )
     else:
         await message.answer(
-            f"Привет, {message.from_user.first_name}!\n\n"
-            "Кто ты? Это нужно выбрать один раз.",
+            f"Привет, {message.from_user.first_name}!\n\nКто ты? Это нужно выбрать один раз.",
             reply_markup=role_kb,
         )
 
@@ -438,10 +543,11 @@ async def cmd_start(message: Message):
 async def cmd_reset(message: Message):
     conn = get_conn()
     cur = conn.cursor()
-    placeholder = "%s" if USE_POSTGRES else "?"
-    cur.execute(f"DELETE FROM users WHERE user_id = {placeholder}", (message.from_user.id,))
+    ph = "%s" if USE_POSTGRES else "?"
+    cur.execute(f"DELETE FROM users WHERE user_id = {ph}", (message.from_user.id,))
     conn.commit()
     conn.close()
+    dialog_state.pop(message.from_user.id, None)
     await message.answer("Роль сброшена. Напиши /start.", reply_markup=ReplyKeyboardRemove())
 
 
@@ -449,9 +555,7 @@ async def cmd_reset(message: Message):
 async def choose_groomer(message: Message):
     set_role(message.from_user.id, "groomer")
     start_trial_if_needed(message.from_user.id)
-
     trial_until, paid_until = get_subscription(message.from_user.id)
-
     if paid_until:
         paid_dt = datetime.strptime(paid_until, "%Y-%m-%d %H:%M")
         status_text = f"\n✅ Подписка активна ещё {days_left_ru(paid_dt)}"
@@ -460,7 +564,6 @@ async def choose_groomer(message: Message):
         status_text = f"\n🎁 Пробный период — осталось {days_left_ru(trial_dt)}"
     else:
         status_text = ""
-
     await message.answer(
         f"Отлично! Теперь ты можешь добавлять клиентов.{status_text}\n\n"
         "Используй кнопки ниже или /add.",
@@ -477,11 +580,13 @@ async def choose_client(message: Message):
     )
 
 
+# ============================================================
+# НАСТРОЙКИ
+# ============================================================
 @dp.message(F.text == "⚙️ Настройки")
 async def btn_settings(message: Message):
     if get_role(message.from_user.id) != "groomer":
         return
-
     current = get_reminder_minutes(message.from_user.id)
     await message.answer(
         f"⚙️ Настройки\n\n"
@@ -497,7 +602,6 @@ async def cb_set_reminder(callback: CallbackQuery):
     if get_role(callback.from_user.id) != "groomer":
         await callback.answer()
         return
-
     try:
         minutes = int(callback.data.replace("remind_", ""))
         set_reminder_minutes(callback.from_user.id, minutes)
@@ -511,6 +615,9 @@ async def cb_set_reminder(callback: CallbackQuery):
     await callback.answer()
 
 
+# ============================================================
+# ПОДПИСКА
+# ============================================================
 @dp.message(Command("pay"))
 async def cmd_pay(message: Message):
     if get_role(message.from_user.id) != "groomer":
@@ -526,27 +633,21 @@ async def cmd_pay(message: Message):
 async def btn_subscription(message: Message):
     if get_role(message.from_user.id) != "groomer":
         return
-
     ok, status, until = subscription_ok(message.from_user.id)
-
     if not ok:
         await message.answer(
             "⚠️ Ваш пробный период закончился.\n\n"
-            "Чтобы продолжить пользоваться ботом — оплатите $5/мес.\n"
+            "Чтобы продолжить — оплатите $5/мес.\n"
             f"Ссылка: {PAYMENT_LINK}\n\n"
-            "После оплаты напишите нам — активируем в течение часа."
+            "После оплаты напишите нам."
         )
         return
-
     if status == "paid":
-        await message.answer(
-            f"✅ Подписка активна ещё {days_left_ru(until)}\n\n"
-            "Спасибо, что пользуетесь RemindMe!"
-        )
+        await message.answer(f"✅ Подписка активна ещё {days_left_ru(until)}")
     else:
         await message.answer(
             f"🎁 Пробный период — осталось {days_left_ru(until)}\n\n"
-            f"Чтобы продлить после окончания — $5/мес:\n{PAYMENT_LINK}"
+            f"Для продления — $5/мес:\n{PAYMENT_LINK}"
         )
 
 
@@ -570,181 +671,165 @@ async def cmd_activate(message: Message):
 
 
 # ============================================================
-# ДОБАВЛЕНИЕ ЗАПИСИ
+# ДОБАВЛЕНИЕ ЗАПИСИ — ПОШАГОВЫЙ ДИАЛОГ
 # ============================================================
 @dp.message(Command("add"))
 async def cmd_add(message: Message):
     if get_role(message.from_user.id) != "groomer":
         await message.answer("Эта команда только для мастеров.")
         return
-
-    ok, status, until = subscription_ok(message.from_user.id)
-    if not ok:
-        await message.answer(
-            "⚠️ Пробный период закончился.\n\n"
-            f"Оплатите $5/мес: {PAYMENT_LINK}"
-        )
-        return
-
-    await message.answer(
-        "Отправь данные клиента в формате:\n\n"
-        "Имя, chat_id, ГГГГ-ММ-ДД ЧЧ:ММ\n\n"
-        "📌 Пример:\n"
-        "Анна, 473980999, 2026-09-20 15:30\n\n"
-        "• Анна — имя клиента\n"
-        "• 473980999 — его Telegram ID (@userinfobot)\n"
-        "• 2026-09-20 15:30 — дата и время визита"
-    )
-
-
-@dp.message(F.text.regexp(r"^.+,.+,.+$"))
-async def handle_add(message: Message):
-    if get_role(message.from_user.id) != "groomer":
-        return
-
     ok, status, until = subscription_ok(message.from_user.id)
     if not ok:
         await message.answer("⚠️ Пробный период закончился. /pay")
         return
+    dialog_state[message.from_user.id] = {"step": "name"}
+    await message.answer(
+        "📝 Добавляем запись.\n\n"
+        "Шаг 1/2. Как зовут клиента?",
+        reply_markup=cancel_kb,
+    )
 
-    try:
-        parts = [p.strip() for p in message.text.split(",")]
-        name, chat_id, visit_time = parts[0], int(parts[1]), parts[2]
-        visit_dt = datetime.strptime(visit_time, "%Y-%m-%d %H:%M")
 
-        if visit_dt < now().replace(tzinfo=None):
-            await message.answer("❌ Дата уже прошла.")
+@dp.message(F.text == "➕ Добавить запись")
+async def btn_add(message: Message):
+    await cmd_add(message)
+
+
+@dp.message(F.text == "❌ Отмена")
+async def btn_cancel_dialog(message: Message):
+    if message.from_user.id in dialog_state:
+        dialog_state.pop(message.from_user.id, None)
+        await message.answer("Отменено.", reply_markup=main_kb)
+    else:
+        await message.answer("Нечего отменять.", reply_markup=main_kb)
+
+
+# Обработчик диалога (должен идти ПОСЛЕ команд и кнопок)
+@dp.message(F.text & ~F.text.startswith("/"))
+async def handle_dialog(message: Message):
+    state = dialog_state.get(message.from_user.id)
+    if not state:
+        return
+
+    if get_role(message.from_user.id) != "groomer":
+        dialog_state.pop(message.from_user.id, None)
+        return
+
+    step = state.get("step")
+
+    if step == "name":
+        name = message.text.strip()
+        if len(name) < 2 or len(name) > 40:
+            await message.answer("Имя должно быть от 2 до 40 символов. Попробуй снова:")
+            return
+        state["name"] = name
+        state["step"] = "time"
+        await message.answer(
+            f"Шаг 2/2. На когда запись для <b>{name}</b>?\n\n"
+            f"Формат: <code>26.09 15:30</code>\n"
+            f"Также можно: <code>сегодня 15:30</code> или <code>завтра 12:00</code>",
+            parse_mode="HTML",
+            reply_markup=cancel_kb,
+        )
+        return
+
+    if step == "time":
+        text = message.text.strip().lower()
+        visit_dt = None
+        current = now()
+
+        # Попытка 1: "сегодня 15:30" / "завтра 12:00"
+        try:
+            parts = text.split()
+            if len(parts) == 2:
+                day_word, time_part = parts
+                time_obj = datetime.strptime(time_part, "%H:%M").time()
+                if day_word == "сегодня":
+                    visit_dt = datetime.combine(current.date(), time_obj)
+                elif day_word == "завтра":
+                    visit_dt = datetime.combine(current.date() + timedelta(days=1), time_obj)
+        except Exception:
+            pass
+
+        # Попытка 2: "26.09 15:30"
+        if visit_dt is None:
+            try:
+                visit_dt = datetime.strptime(text, "%d.%m %H:%M")
+                visit_dt = visit_dt.replace(year=current.year)
+                # Если дата в прошлом — берём следующий год
+                if visit_dt < current.replace(tzinfo=None):
+                    visit_dt = visit_dt.replace(year=current.year + 1)
+            except Exception:
+                pass
+
+        # Попытка 3: "26.09.2026 15:30"
+        if visit_dt is None:
+            try:
+                visit_dt = datetime.strptime(text, "%d.%m.%Y %H:%M")
+            except Exception:
+                pass
+
+        if visit_dt is None:
+            await message.answer(
+                "❌ Не понял. Напиши в формате:\n\n"
+                "<code>26.09 15:30</code>\n"
+                "или <code>сегодня 15:30</code>\n"
+                "или <code>завтра 12:00</code>",
+                parse_mode="HTML",
+            )
             return
 
-        add_client(message.from_user.id, name, chat_id, visit_time)
+        if visit_dt < current.replace(tzinfo=None):
+            await message.answer("❌ Дата уже прошла. Укажи будущее время.")
+            return
+
+        visit_str = visit_dt.strftime("%Y-%m-%d %H:%M")
+        name = state["name"]
+
+        # Ищем клиента в базе мастера
+        customer = find_customer(message.from_user.id, name)
+        invite_link = None
+
+        if customer:
+            customer_id, cust_name, cust_chat_id, cust_token = customer
+            chat_id = cust_chat_id  # может быть None
+        else:
+            customer_id, token = create_customer(message.from_user.id, name)
+            chat_id = None
+            invite_link = f"https://t.me/{BOT_USERNAME}?start=visit_{token}"
+
+        # Создаём запись
+        add_client(message.from_user.id, customer_id, name, chat_id, visit_str)
+        dialog_state.pop(message.from_user.id, None)
+
         minutes = get_reminder_minutes(message.from_user.id)
-        await message.answer(
-            f"✅ Запись для {name} на {visit_time} сохранена.\n\n"
-            f"⏰ Напоминание клиенту придёт за {format_minutes(minutes)} до визита."
-        )
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}\n\nФормат: Анна, 473980999, 2026-09-20 15:30")
 
-
-# ============================================================
-# КНОПКИ КЛИЕНТА
-# ============================================================
-@dp.callback_query(F.data == "confirm")
-async def cb_confirm(callback: CallbackQuery):
-    conn = get_conn()
-    cur = conn.cursor()
-    placeholder = "%s" if USE_POSTGRES else "?"
-    cur.execute(
-        f"SELECT id, groomer_id, name, visit_time FROM clients "
-        f"WHERE chat_id = {placeholder} AND confirmed = 0 AND cancelled = 0",
-        (callback.from_user.id,),
-    )
-    rows = cur.fetchall()
-
-    if not rows:
-        conn.close()
-        await callback.message.edit_text("У вас нет активных записей.")
-        await callback.answer()
-        return
-
-    cur.execute(
-        f"UPDATE clients SET confirmed = 1 "
-        f"WHERE chat_id = {placeholder} AND confirmed = 0 AND cancelled = 0",
-        (callback.from_user.id,),
-    )
-    conn.commit()
-    conn.close()
-
-    await callback.message.edit_text("✅ Спасибо! Ждём вас.")
-    await callback.answer()
-
-    for cid, groomer_id, name, visit_time in rows:
-        try:
-            await bot.send_message(groomer_id, f"✅ {name} подтвердил визит на {visit_time}.")
-        except Exception as e:
-            print(f"[ПОДТВЕРЖДЕНИЕ] {e}")
-
-
-@dp.callback_query(F.data == "reschedule")
-async def cb_reschedule(callback: CallbackQuery):
-    conn = get_conn()
-    cur = conn.cursor()
-    placeholder = "%s" if USE_POSTGRES else "?"
-    cur.execute(
-        f"SELECT id, groomer_id, name, visit_time FROM clients "
-        f"WHERE chat_id = {placeholder} AND confirmed = 0 AND cancelled = 0",
-        (callback.from_user.id,),
-    )
-    rows = cur.fetchall()
-
-    if not rows:
-        conn.close()
-        await callback.message.edit_text("У вас нет активных записей.")
-        await callback.answer()
-        return
-
-    cur.execute(
-        f"UPDATE clients SET reschedule = 1 "
-        f"WHERE chat_id = {placeholder} AND cancelled = 0",
-        (callback.from_user.id,),
-    )
-    conn.commit()
-    conn.close()
-
-    await callback.message.edit_text("📞 Понял! Передал мастеру.")
-    await callback.answer()
-
-    for cid, groomer_id, name, visit_time in rows:
-        try:
-            await bot.send_message(
-                groomer_id,
-                f"📞 {name} хочет перенести визит (был на {visit_time}).",
+        if chat_id:
+            # Клиент уже подключён
+            await message.answer(
+                f"✅ Запись для <b>{name}</b> на <b>{visit_str}</b> создана.\n\n"
+                f"📩 Клиент уже подключён — напоминание придёт за {format_minutes(minutes)} до визита.",
+                parse_mode="HTML",
+                reply_markup=main_kb,
             )
-        except Exception as e:
-            print(f"[ПЕРЕЗАПИСЬ] {e}")
-
-
-@dp.callback_query(F.data == "cancel")
-async def cb_cancel(callback: CallbackQuery):
-    conn = get_conn()
-    cur = conn.cursor()
-    placeholder = "%s" if USE_POSTGRES else "?"
-    cur.execute(
-        f"SELECT id, groomer_id, name, visit_time FROM clients "
-        f"WHERE chat_id = {placeholder} AND confirmed = 0 AND cancelled = 0",
-        (callback.from_user.id,),
-    )
-    rows = cur.fetchall()
-
-    if not rows:
-        conn.close()
-        await callback.message.edit_text("У вас нет активных записей.")
-        await callback.answer()
-        return
-
-    cur.execute(
-        f"UPDATE clients SET cancelled = 1 "
-        f"WHERE chat_id = {placeholder} AND cancelled = 0",
-        (callback.from_user.id,),
-    )
-    conn.commit()
-    conn.close()
-
-    await callback.message.edit_text("❌ Визит отменён.")
-    await callback.answer()
-
-    for cid, groomer_id, name, visit_time in rows:
-        try:
-            await bot.send_message(
-                groomer_id,
-                f"❌ {name} отменил визит на {visit_time}.",
+        else:
+            # Нужна ссылка-приглашение
+            if not invite_link:
+                invite_link = f"https://t.me/{BOT_USERNAME}?start=visit_{cust_token}"
+            await message.answer(
+                f"✅ Запись для <b>{name}</b> на <b>{visit_str}</b> создана.\n\n"
+                f"🔗 <b>Отправьте клиенту ссылку</b>, чтобы он получал напоминания:\n\n"
+                f"<code>{invite_link}</code>\n\n"
+                f"После того как клиент откроет ссылку — напоминание придёт за {format_minutes(minutes)} до визита.\n\n"
+                f"Если клиент не в Telegram — можно напомнить ему самому в WhatsApp или по телефону.",
+                parse_mode="HTML",
+                reply_markup=main_kb,
             )
-        except Exception as e:
-            print(f"[ОТМЕНА] {e}")
+        return
 
 
 # ============================================================
-# СПИСОК
+# СПИСОК ЗАПИСЕЙ
 # ============================================================
 @dp.message(Command("list"))
 async def cmd_list(message: Message):
@@ -756,16 +841,19 @@ async def cmd_list(message: Message):
         await message.answer("Пока нет записей.")
         return
     text = "📋 Твои записи:\n\n"
-    for rid, name, visit_time, confirmed, cancelled, reschedule in rows:
+    for rid, name, visit_time, confirmed, cancelled, reschedule, chat_id, customer_id in rows:
         if cancelled:
             status = "❌"
         elif reschedule:
             status = "📞"
         elif confirmed:
             status = "✅"
+        elif not chat_id:
+            status = "🔗"  # ждёт подключения
         else:
             status = "⏳"
         text += f"{status} {name} — {visit_time}\n"
+    text += "\n🔗 — клиент ещё не подключён к боту."
     await message.answer(text)
 
 
@@ -774,9 +862,100 @@ async def btn_list(message: Message):
     await cmd_list(message)
 
 
-@dp.message(F.text == "➕ Добавить запись")
-async def btn_add(message: Message):
-    await cmd_add(message)
+# ============================================================
+# КНОПКИ КЛИЕНТА
+# ============================================================
+@dp.callback_query(F.data == "confirm")
+async def cb_confirm(callback: CallbackQuery):
+    conn = get_conn()
+    cur = conn.cursor()
+    ph = "%s" if USE_POSTGRES else "?"
+    cur.execute(
+        f"SELECT id, groomer_id, name, visit_time FROM clients "
+        f"WHERE chat_id = {ph} AND confirmed = 0 AND cancelled = 0",
+        (callback.from_user.id,),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        conn.close()
+        await callback.message.edit_text("У вас нет активных записей.")
+        await callback.answer()
+        return
+    cur.execute(
+        f"UPDATE clients SET confirmed = 1 WHERE chat_id = {ph} AND confirmed = 0 AND cancelled = 0",
+        (callback.from_user.id,),
+    )
+    conn.commit()
+    conn.close()
+    await callback.message.edit_text("✅ Спасибо! Ждём вас.")
+    await callback.answer()
+    for cid, groomer_id, name, visit_time in rows:
+        try:
+            await bot.send_message(groomer_id, f"✅ {name} подтвердил визит на {visit_time}.")
+        except Exception as e:
+            print(f"[CONFIRM] {e}")
+
+
+@dp.callback_query(F.data == "reschedule")
+async def cb_reschedule(callback: CallbackQuery):
+    conn = get_conn()
+    cur = conn.cursor()
+    ph = "%s" if USE_POSTGRES else "?"
+    cur.execute(
+        f"SELECT id, groomer_id, name, visit_time FROM clients "
+        f"WHERE chat_id = {ph} AND confirmed = 0 AND cancelled = 0",
+        (callback.from_user.id,),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        conn.close()
+        await callback.message.edit_text("У вас нет активных записей.")
+        await callback.answer()
+        return
+    cur.execute(
+        f"UPDATE clients SET reschedule = 1 WHERE chat_id = {ph} AND cancelled = 0",
+        (callback.from_user.id,),
+    )
+    conn.commit()
+    conn.close()
+    await callback.message.edit_text("📞 Передал мастеру.")
+    await callback.answer()
+    for cid, groomer_id, name, visit_time in rows:
+        try:
+            await bot.send_message(groomer_id, f"📞 {name} хочет перенести визит (был на {visit_time}).")
+        except Exception as e:
+            print(f"[RESCHEDULE] {e}")
+
+
+@dp.callback_query(F.data == "cancel")
+async def cb_cancel(callback: CallbackQuery):
+    conn = get_conn()
+    cur = conn.cursor()
+    ph = "%s" if USE_POSTGRES else "?"
+    cur.execute(
+        f"SELECT id, groomer_id, name, visit_time FROM clients "
+        f"WHERE chat_id = {ph} AND confirmed = 0 AND cancelled = 0",
+        (callback.from_user.id,),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        conn.close()
+        await callback.message.edit_text("У вас нет активных записей.")
+        await callback.answer()
+        return
+    cur.execute(
+        f"UPDATE clients SET cancelled = 1 WHERE chat_id = {ph} AND cancelled = 0",
+        (callback.from_user.id,),
+    )
+    conn.commit()
+    conn.close()
+    await callback.message.edit_text("❌ Визит отменён.")
+    await callback.answer()
+    for cid, groomer_id, name, visit_time in rows:
+        try:
+            await bot.send_message(groomer_id, f"❌ {name} отменил визит на {visit_time}.")
+        except Exception as e:
+            print(f"[CANCEL] {e}")
 
 
 # ============================================================
@@ -788,14 +967,15 @@ async def reminder_loop():
             conn = get_conn()
             cur = conn.cursor()
             current = now()
-            ph = "%s" if USE_POSTGRES else "?"
 
+            # Ищем записи, у которых есть chat_id и которые пора напомнить
             cur.execute(
                 f"SELECT c.id, c.name, c.chat_id, c.groomer_id, c.visit_time, "
                 f"COALESCE(u.reminder_minutes, 30) AS reminder_minutes "
                 f"FROM clients c "
                 f"LEFT JOIN users u ON u.user_id = c.groomer_id "
-                f"WHERE c.confirmed = 0 AND c.cancelled = 0 AND c.notified = 0"
+                f"WHERE c.confirmed = 0 AND c.cancelled = 0 AND c.notified = 0 "
+                f"AND c.chat_id IS NOT NULL"
             )
             all_rows = cur.fetchall()
             conn.close()
@@ -806,12 +986,12 @@ async def reminder_loop():
                     visit_dt = datetime.strptime(visit_time, "%Y-%m-%d %H:%M")
                     remind_at = visit_dt - timedelta(minutes=reminder_minutes)
                     diff = (remind_at - current.replace(tzinfo=None)).total_seconds()
-
                     if -30 <= diff <= 30:
                         to_notify.append((cid, name, chat_id, visit_time, reminder_minutes))
                 except Exception as e:
-                    print(f"[ПЛАНИРОВЩИК] {name}: {e}")
+                    print(f"[SCHED] {name}: {e}")
 
+            # Молчащие
             conn = get_conn()
             cur = conn.cursor()
             cur.execute(
@@ -831,11 +1011,10 @@ async def reminder_loop():
                     visit_dt = datetime.strptime(visit_time, "%Y-%m-%d %H:%M")
                     remind_at = visit_dt - timedelta(minutes=reminder_minutes)
                     diff = (current.replace(tzinfo=None) - remind_at).total_seconds()
-
                     if SILENT_TIMEOUT_MINUTES * 60 - 30 <= diff <= SILENT_TIMEOUT_MINUTES * 60 + 30:
                         silent_rows.append((cid, name, groomer_id, visit_time))
                 except Exception as e:
-                    print(f"[МОЛЧИТ] {name}: {e}")
+                    print(f"[SILENT] {name}: {e}")
 
             print(f"[{current.strftime('%H:%M')}] Напомнить: {len(to_notify)} | Молчат: {len(silent_rows)}")
 
@@ -856,9 +1035,9 @@ async def reminder_loop():
                     cur.execute(f"UPDATE clients SET notified = 1 WHERE id = {ph2}", (cid,))
                     conn.commit()
                     conn.close()
-                    print(f"[НАПОМНИЛ] {name} ({chat_id})")
+                    print(f"[REMIND] {name} ({chat_id})")
                 except Exception as e:
-                    print(f"[НАПОМНИЛ ОШИБКА] {name}: {e}")
+                    print(f"[REMIND ERR] {name}: {e}")
 
             for cid, name, groomer_id, visit_time in silent_rows:
                 try:
@@ -874,9 +1053,9 @@ async def reminder_loop():
                     cur.execute(f"UPDATE clients SET notified_silent = 1 WHERE id = {ph2}", (cid,))
                     conn.commit()
                     conn.close()
-                    print(f"[МОЛЧИТ] {name} → мастеру {groomer_id}")
+                    print(f"[SILENT] {name} → мастеру {groomer_id}")
                 except Exception as e:
-                    print(f"[МОЛЧИТ ОШИБКА] {name}: {e}")
+                    print(f"[SILENT ERR] {name}: {e}")
 
         except Exception as e:
             logging.error(f"Ошибка в reminder_loop: {e}")
@@ -889,7 +1068,7 @@ async def cleanup_loop():
         try:
             deleted = cleanup_old_records()
             if deleted:
-                print(f"[ОЧИСТКА] Удалено: {deleted}")
+                print(f"[CLEANUP] Удалено: {deleted}")
         except Exception as e:
             logging.error(f"Ошибка в cleanup_loop: {e}")
         await asyncio.sleep(3600)
