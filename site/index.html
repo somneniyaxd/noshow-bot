@@ -37,11 +37,19 @@
   .logo span { color: #E07B39; }
 
   .lang-switch { display: flex; gap: 8px; font-size: 14px; }
-  .lang-switch a {
-    color: #7A6F63; text-decoration: none;
-    padding: 4px 10px; border-radius: 6px;
+  .lang-switch button {
+    color: #7A6F63;
+    background: transparent;
+    border: none;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s;
   }
-  .lang-switch a.active { background: #E07B39; color: white; }
+  .lang-switch button.active { background: #E07B39; color: white; }
+  .lang-switch button:hover:not(.active) { background: #F0E8DC; }
 
   /* HERO */
   .hero { text-align: center; padding: 60px 0 40px; }
@@ -64,6 +72,9 @@
     text-decoration: none;
     transition: transform 0.15s, box-shadow 0.15s;
     box-shadow: 0 4px 16px rgba(224, 123, 57, 0.25);
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
   }
   .btn:hover {
     transform: translateY(-2px);
@@ -153,7 +164,6 @@
     margin-bottom: 48px; font-size: 17px;
   }
 
-  /* PROBLEM */
   .problem-box {
     background: white; border-radius: 20px;
     padding: 40px; max-width: 760px;
@@ -167,7 +177,6 @@
   .problem-box p:last-child { margin-bottom: 0; }
   .problem-box strong { color: #E07B39; }
 
-  /* STEPS */
   .steps {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -190,7 +199,6 @@
   .step h3 { font-size: 19px; margin-bottom: 10px; }
   .step p { color: #5C5247; font-size: 15px; }
 
-  /* FEATURES */
   .features {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -205,7 +213,6 @@
   .feature h3 { font-size: 17px; margin-bottom: 8px; }
   .feature p { font-size: 15px; color: #5C5247; }
 
-  /* STATS */
   .stats {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -227,7 +234,6 @@
     font-size: 15px; color: #5C5247;
   }
 
-  /* BEFORE / AFTER */
   .compare {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -256,7 +262,6 @@
     content: "✓"; color: #4CAF50; font-weight: 700;
   }
 
-  /* PRICING */
   .pricing {
     background: white; border-radius: 24px;
     padding: 48px; max-width: 480px;
@@ -286,7 +291,6 @@
     font-weight: 700; font-size: 18px; flex-shrink: 0;
   }
 
-  /* FAQ */
   .faq { max-width: 760px; margin: 40px auto 0; }
   .faq-item {
     background: white; border-radius: 14px;
@@ -296,7 +300,6 @@
   .faq-item h3 { font-size: 17px; margin-bottom: 10px; }
   .faq-item p { color: #5C5247; font-size: 15px; }
 
-  /* FINAL CTA */
   .final-cta { text-align: center; padding: 80px 0; }
   .final-cta h2 {
     font-size: 40px; font-weight: 800;
@@ -307,7 +310,6 @@
     margin-bottom: 32px;
   }
 
-  /* FOOTER */
   footer {
     padding: 40px 0; text-align: center;
     color: #9A8E80; font-size: 14px;
@@ -336,70 +338,67 @@
     Remind<span>Me</span>
   </div>
   <div class="lang-switch">
-    <a href="/" class="active">RU</a>
-    <a href="/en/">EN</a>
+    <button onclick="setLang('ru')" id="btn-ru" class="active">RU</button>
+    <button onclick="setLang('en')" id="btn-en">EN</button>
   </div>
 </header>
 
 <!-- HERO -->
 <section class="hero container">
-  <h1>Перестаньте терять<br>клиентов из-за <span>неявок</span></h1>
-  <p>Telegram-бот напомнит вашим клиентам о визите и попросит подтвердить. Вы всегда знаете, кто придёт, а кто нет.</p>
-  <a href="https://t.me/noshow_killer_bot" class="btn btn-lg">Попробовать бесплатно</a>
-  <span class="btn-sub">Первая неделя бесплатно · без карты</span>
+  <h1 data-ru='Перестаньте терять<br>клиентов из-за <span>неявок</span>' data-en='Stop losing clients<br>to <span>no-shows</span>'></h1>
+  <p data-ru='Telegram-бот напомнит вашим клиентам о визите и попросит подтвердить. Вы всегда знаете, кто придёт, а кто нет.' data-en='A Telegram bot that reminds your clients about appointments and asks them to confirm. You always know who is coming and who is not.'></p>
+  <a href="https://t.me/noshow_killer_bot" class="btn btn-lg" data-ru='Попробовать бесплатно' data-en='Try for free'></a>
+  <span class="btn-sub" data-ru='Первая неделя бесплатно · без карты' data-en='First week free · no card required'></span>
 </section>
 
 <!-- SCREENSHOTS -->
 <section class="container">
   <div class="screens">
-    <!-- Phone 1: Список записей -->
     <div class="phone">
       <div class="phone-header">
         <div class="phone-avatar">R</div>
         <div>
           <div class="phone-name">RemindMe</div>
-          <div class="phone-status">бот</div>
+          <div class="phone-status" data-ru='бот' data-en='bot'></div>
         </div>
       </div>
       <div class="phone-body">
-        <div class="msg out">📋 Мои записи</div>
-        <div class="msg">📋 Твои записи:<br><br>🔗 Анна — 26.09 13:40<br>⏳ Иван — 26.09 15:00<br>✅ Мария — 26.09 18:00<br>📞 Олег — 27.09 10:00<br><br>🔗 — клиент ещё не подключён</div>
+        <div class="msg out" data-ru='📋 Мои записи' data-en='📋 My bookings'></div>
+        <div class="msg" data-ru='📋 Твои записи:<br><br>🔗 Анна — 26.09 13:40<br>⏳ Иван — 26.09 15:00<br>✅ Мария — 26.09 18:00<br>📞 Олег — 27.09 10:00<br><br>🔗 — клиент ещё не подключён' data-en='📋 Your bookings:<br><br>🔗 Anna — Sep 26, 13:40<br>⏳ Ivan — Sep 26, 15:00<br>✅ Mary — Sep 26, 18:00<br>📞 Alex — Sep 27, 10:00<br><br>🔗 — client not connected yet'></div>
       </div>
     </div>
 
-    <!-- Phone 2: Диалог -->
     <div class="phone">
       <div class="phone-header">
         <div class="phone-avatar">R</div>
         <div>
           <div class="phone-name">RemindMe</div>
-          <div class="phone-status">бот</div>
+          <div class="phone-status" data-ru='бот' data-en='bot'></div>
         </div>
       </div>
       <div class="phone-body">
-        <div class="msg out">➕ Добавить запись</div>
-        <div class="msg">📝 Добавляем запись.<br><br>Шаг 1/2. Как зовут клиента?</div>
-        <div class="msg out">Анна</div>
-        <div class="msg">Шаг 2/2. На когда запись для <b>Анна</b>?<br><br>Формат: <code>26.09 15:30</code></div>
-        <div class="msg out">сегодня 18:00</div>
-        <div class="msg">✅ Запись для Анна на 2026-09-26 18:00 создана.</div>
+        <div class="msg out" data-ru='➕ Добавить запись' data-en='➕ Add booking'></div>
+        <div class="msg" data-ru='📝 Добавляем запись.<br><br>Шаг 1/2. Как зовут клиента?' data-en='📝 Adding a booking.<br><br>Step 1/2. What is the name of the client?'></div>
+        <div class="msg out" data-ru='Анна' data-en='Anna'></div>
+        <div class="msg" data-ru='Шаг 2/2. На когда запись для <b>Анна</b>?<br><br>Формат: <code>26.09 15:30</code>' data-en='Step 2/2. When is the visit for <b>Anna</b>?<br><br>Format: <code>26.09 15:30</code>'></div>
+        <div class="msg out" data-ru='сегодня 18:00' data-en='today 18:00'></div>
+        <div class="msg" data-ru='✅ Запись для Анна на 2026-09-26 18:00 создана.' data-en='✅ Booking for Anna on 2026-09-26 18:00 created.'></div>
       </div>
     </div>
 
-    <!-- Phone 3: Напоминание -->
     <div class="phone">
       <div class="phone-header">
         <div class="phone-avatar">R</div>
         <div>
           <div class="phone-name">RemindMe</div>
-          <div class="phone-status">бот</div>
+          <div class="phone-status" data-ru='бот' data-en='bot'></div>
         </div>
       </div>
       <div class="phone-body">
-        <div class="msg">Здравствуйте! Напоминаем, что сегодня у вас визит в 18:00.<br><br>Подтвердите, пожалуйста:</div>
-        <div class="msg-btn green">✅ Да, буду</div>
-        <div class="msg-btn">📞 Перенести визит</div>
-        <div class="msg-btn red">❌ Отмена</div>
+        <div class="msg" data-ru='Здравствуйте! Напоминаем, что сегодня у вас визит в 18:00.<br><br>Подтвердите, пожалуйста:' data-en='Hello! Just a reminder that you have a visit today at 18:00.<br><br>Please confirm:'></div>
+        <div class="msg-btn green" data-ru='✅ Да, буду' data-en='✅ Yes, I will come'></div>
+        <div class="msg-btn" data-ru='📞 Перенести визит' data-en='📞 Reschedule'></div>
+        <div class="msg-btn red" data-ru='❌ Отмена' data-en='❌ Cancel'></div>
       </div>
     </div>
   </div>
@@ -407,36 +406,36 @@
 
 <!-- PROBLEM -->
 <section class="section container">
-  <h2>Знакомая ситуация?</h2>
-  <p class="subtitle">Каждый день мастера теряют деньги на пустых слотах</p>
+  <h2 data-ru='Знакомая ситуация?' data-en='Sound familiar?'></h2>
+  <p class="subtitle" data-ru='Каждый день мастера теряют деньги на пустых слотах' data-en='Every day, professionals lose money on empty slots'></p>
   <div class="problem-box">
-    <p>Клиент записался на стрижку, маникюр или массаж — и <strong>просто не пришёл</strong>.</p>
-    <p>Вы не можете взять другого клиента: слот пропал, доход потерян.</p>
-    <p>А если бы клиент написал «не смогу» за 30 минут — вы бы успели позвать другого.</p>
+    <p data-ru='Клиент записался на стрижку, маникюр или массаж — и <strong>просто не пришёл</strong>.' data-en='A client booked a haircut, manicure or massage — and <strong>simply did not show up</strong>.'></p>
+    <p data-ru='Вы не можете взять другого клиента: слот пропал, доход потерян.' data-en='You cannot take another client: the slot is gone, income is lost.'></p>
+    <p data-ru='А если бы клиент написал «не смогу» за 30 минут — вы бы успели позвать другого.' data-en='But if the client had written "I cannot make it" 30 minutes in advance — you could have invited someone else.'></p>
   </div>
 </section>
 
 <!-- BEFORE/AFTER -->
 <section class="section container">
-  <h2>Как меняется работа</h2>
-  <p class="subtitle">Разница заметна уже через неделю</p>
+  <h2 data-ru='Как меняется работа' data-en='How things change'></h2>
+  <p class="subtitle" data-ru='Разница заметна уже через неделю' data-en='The difference is noticeable within a week'></p>
   <div class="compare">
     <div class="compare-col bad">
-      <h3>😩 Без RemindMe</h3>
+      <h3 data-ru='😩 Без RemindMe' data-en='😩 Without RemindMe'></h3>
       <ul>
-        <li>Клиент забыл — вы потеряли деньги</li>
-        <li>Звонить и напоминать вручную</li>
-        <li>Не знаете, кто придёт, а кто нет</li>
-        <li>Пустой слот в календаре</li>
+        <li data-ru='Клиент забыл — вы потеряли деньги' data-en='Client forgot — you lost money'></li>
+        <li data-ru='Звонить и напоминать вручную' data-en='Calling and reminding manually'></li>
+        <li data-ru='Не знаете, кто придёт, а кто нет' data-en='You do not know who is coming'></li>
+        <li data-ru='Пустой слот в календаре' data-en='Empty slot in the calendar'></li>
       </ul>
     </div>
     <div class="compare-col good">
-      <h3>🎉 С RemindMe</h3>
+      <h3 data-ru='🎉 С RemindMe' data-en='🎉 With RemindMe'></h3>
       <ul>
-        <li>Бот сам напомнил клиенту</li>
-        <li>Клиент подтверждает одной кнопкой</li>
-        <li>Отмену и перенос видно сразу</li>
-        <li>Вы успеваете позвать другого</li>
+        <li data-ru='Бот сам напомнил клиенту' data-en='The bot reminded them for you'></li>
+        <li data-ru='Клиент подтверждает одной кнопкой' data-en='Client confirms with one tap'></li>
+        <li data-ru='Отмену и перенос видно сразу' data-en='Cancellations and reschedules visible instantly'></li>
+        <li data-ru='Вы успеваете позвать другого' data-en='You can invite another client'></li>
       </ul>
     </div>
   </div>
@@ -444,128 +443,128 @@
 
 <!-- STEPS -->
 <section class="section container">
-  <h2>Как это работает</h2>
-  <p class="subtitle">Три шага — и бот начнёт работать на вас</p>
+  <h2 data-ru='Как это работает' data-en='How it works'></h2>
+  <p class="subtitle" data-ru='Три шага — и бот начнёт работать на вас' data-en='Three steps — and the bot starts working for you'></p>
   <div class="steps">
     <div class="step">
       <div class="step-num">1</div>
-      <h3>Добавьте запись</h3>
-      <p>Бот спросит имя клиента и время. Всё, запись создана.</p>
+      <h3 data-ru='Добавьте запись' data-en='Add a booking'></h3>
+      <p data-ru='Бот спросит имя клиента и время. Всё, запись создана.' data-en='The bot asks for the name and time. Done, booking created.'></p>
     </div>
     <div class="step">
       <div class="step-num">2</div>
-      <h3>Бот напомнит</h3>
-      <p>За 30 минут (или за свой интервал) — клиент получит напоминание.</p>
+      <h3 data-ru='Бот напомнит' data-en='The bot reminds'></h3>
+      <p data-ru='За 30 минут (или за свой интервал) — клиент получит напоминание.' data-en='30 minutes before (or any interval you set) — the client gets a reminder.'></p>
     </div>
     <div class="step">
       <div class="step-num">3</div>
-      <h3>Клиент отвечает</h3>
-      <p>Одной кнопкой: «буду», «перенести» или «отмена». Вы получаете уведомление.</p>
+      <h3 data-ru='Клиент отвечает' data-en='Client answers'></h3>
+      <p data-ru='Одной кнопкой: «буду», «перенести» или «отмена». Вы получаете уведомление.' data-en='One tap: "yes", "reschedule" or "cancel". You get notified instantly.'></p>
     </div>
   </div>
 </section>
 
 <!-- FEATURES -->
 <section class="section container">
-  <h2>Возможности</h2>
-  <p class="subtitle">Всё, что нужно, чтобы клиенты не забывали</p>
+  <h2 data-ru='Возможности' data-en='Features'></h2>
+  <p class="subtitle" data-ru='Всё, что нужно, чтобы клиенты не забывали' data-en='Everything you need so clients do not forget'></p>
   <div class="features">
     <div class="feature">
       <div class="feature-icon">⏰</div>
-      <h3>Гибкие напоминания</h3>
-      <p>Сами выбираете — за 30 минут, за час или за сутки.</p>
+      <h3 data-ru='Гибкие напоминания' data-en='Flexible reminders'></h3>
+      <p data-ru='Сами выбираете — за 30 минут, за час или за сутки.' data-en='Choose 30 minutes, 1 hour, or 24 hours before the visit.'></p>
     </div>
     <div class="feature">
       <div class="feature-icon">✅</div>
-      <h3>Три кнопки ответа</h3>
-      <p>Клиент отвечает одним тапом. Без звонков и переписки.</p>
+      <h3 data-ru='Три кнопки ответа' data-en='Three reply buttons'></h3>
+      <p data-ru='Клиент отвечает одним тапом. Без звонков и переписки.' data-en='Client answers with a single tap. No calls, no chats.'></p>
     </div>
     <div class="feature">
       <div class="feature-icon">📩</div>
-      <h3>Уведомления вам</h3>
-      <p>Все ответы клиентов приходят мгновенно — вы в курсе.</p>
+      <h3 data-ru='Уведомления вам' data-en='Notifications to you'></h3>
+      <p data-ru='Все ответы клиентов приходят мгновенно — вы в курсе.' data-en='All client responses arrive instantly — you are in the loop.'></p>
     </div>
     <div class="feature">
       <div class="feature-icon">🔗</div>
-      <h3>Подключение за 1 клик</h3>
-      <p>Клиент открывает ссылку — и уже получает напоминания.</p>
+      <h3 data-ru='Подключение за 1 клик' data-en='One-click onboarding'></h3>
+      <p data-ru='Клиент открывает ссылку — и уже получает напоминания.' data-en='The client opens a link — and starts getting reminders.'></p>
     </div>
   </div>
 </section>
 
 <!-- STATS -->
 <section class="section container">
-  <h2>Почему это работает</h2>
-  <p class="subtitle">Напоминания сокращают неявки и экономят ваше время</p>
+  <h2 data-ru='Почему это работает' data-en='Why it works'></h2>
+  <p class="subtitle" data-ru='Напоминания сокращают неявки и экономят ваше время' data-en='Reminders reduce no-shows and save your time'></p>
   <div class="stats">
     <div class="stat">
       <div class="stat-num">30–60%</div>
-      <div class="stat-label">меньше неявок с напоминаниями</div>
+      <div class="stat-label" data-ru='меньше неявок с напоминаниями' data-en='fewer no-shows with reminders'></div>
     </div>
     <div class="stat">
-      <div class="stat-num">2 мин</div>
-      <div class="stat-label">на добавление записи в боте</div>
+      <div class="stat-num" data-ru='2 мин' data-en='2 min'></div>
+      <div class="stat-label" data-ru='на добавление записи в боте' data-en='to add a booking in the bot'></div>
     </div>
     <div class="stat">
-      <div class="stat-num">0 ₽</div>
-      <div class="stat-label">первые дни бесплатно</div>
+      <div class="stat-num" data-ru='0 ₽' data-en='$0'></div>
+      <div class="stat-label" data-ru='первые дни бесплатно' data-en='first days free'></div>
     </div>
   </div>
 </section>
 
 <!-- PRICING -->
 <section class="section container">
-  <h2>Простая цена</h2>
-  <p class="subtitle">Одна предотвращённая неявка окупает месяцы подписки</p>
+  <h2 data-ru='Простая цена' data-en='Simple pricing'></h2>
+  <p class="subtitle" data-ru='Одна предотвращённая неявка окупает месяцы подписки' data-en='One prevented no-show pays for months of subscription'></p>
   <div class="pricing">
-    <div class="price">$5<span>/мес</span></div>
-    <p class="price-sub">Первая неделя бесплатно</p>
+    <div class="price">$5<span data-ru='/мес' data-en='/mo'></span></div>
+    <p class="price-sub" data-ru='Первая неделя бесплатно' data-en='First week free'></p>
     <ul>
-      <li>Напоминания о визитах</li>
-      <li>Три кнопки ответа клиента</li>
-      <li>Уведомления о переносах</li>
-      <li>Неограниченно записей</li>
+      <li data-ru='Напоминания о визитах' data-en='Visit reminders'></li>
+      <li data-ru='Три кнопки ответа клиента' data-en='Three reply buttons'></li>
+      <li data-ru='Уведомления о переносах' data-en='Reschedule notifications'></li>
+      <li data-ru='Неограниченно записей' data-en='Unlimited bookings'></li>
     </ul>
-    <a href="https://t.me/noshow_killer_bot" class="btn">Начать бесплатно</a>
+    <a href="https://t.me/noshow_killer_bot" class="btn" data-ru='Начать бесплатно' data-en='Start for free'></a>
   </div>
 </section>
 
 <!-- FAQ -->
 <section class="section container">
-  <h2>Частые вопросы</h2>
+  <h2 data-ru='Частые вопросы' data-en='FAQ'></h2>
   <div class="faq">
     <div class="faq-item">
-      <h3>Как клиент получает напоминания?</h3>
-      <p>Через Telegram. Вы добавляете запись → бот даёт ссылку → клиент открывает её один раз — и дальше получает все напоминания автоматически.</p>
+      <h3 data-ru='Как клиент получает напоминания?' data-en='How do clients get reminders?'></h3>
+      <p data-ru='Через Telegram. Вы добавляете запись → бот даёт ссылку → клиент открывает её один раз — и дальше получает все напоминания автоматически.' data-en='Via Telegram. You add a booking → the bot gives you a link → the client opens it once — and gets all reminders automatically.'></p>
     </div>
     <div class="faq-item">
-      <h3>Что, если клиент не в Telegram?</h3>
-      <p>Тогда напомните ему сами — через WhatsApp или по телефону. Бот не мешает, просто не отправляет напоминание. Когда клиент подключится — начнёт работать автоматически.</p>
+      <h3 data-ru='Что, если клиент не в Telegram?' data-en='What if the client is not on Telegram?'></h3>
+      <p data-ru='Тогда напомните ему сами — через WhatsApp или по телефону. Бот не мешает, просто не отправляет напоминание.' data-en='Then remind them yourself — via WhatsApp or a call. The bot just does not send a reminder.'></p>
     </div>
     <div class="faq-item">
-      <h3>Нужно ли что-то устанавливать?</h3>
-      <p>Нет. Всё работает прямо в Telegram. Никаких приложений, сайтов, регистраций.</p>
+      <h3 data-ru='Нужно ли что-то устанавливать?' data-en='Do I need to install anything?'></h3>
+      <p data-ru='Нет. Всё работает прямо в Telegram. Никаких приложений, сайтов, регистраций.' data-en='No. Everything works inside Telegram. No apps, no sites, no signups.'></p>
     </div>
     <div class="faq-item">
-      <h3>Что видит мастер при отмене?</h3>
-      <p>Мгновенное уведомление: «Анна отменила визит на 18:00». Вы сразу видите, что слот освободился.</p>
+      <h3 data-ru='Что видит мастер при отмене?' data-en='What does the pro see on cancellation?'></h3>
+      <p data-ru='Мгновенное уведомление: «Анна отменила визит на 18:00». Вы сразу видите, что слот освободился.' data-en='An instant notification: "Anna cancelled the visit at 18:00". You see the slot is free right away.'></p>
     </div>
     <div class="faq-item">
-      <h3>Что если клиент не ответил на напоминание?</h3>
-      <p>Через 10 минут бот пришлёт вам сообщение: «Анна не ответила». Вы сможете позвонить ей сами и уточнить.</p>
+      <h3 data-ru='Что если клиент не ответил на напоминание?' data-en='What if the client does not reply?'></h3>
+      <p data-ru='Через 10 минут бот пришлёт вам сообщение: «Анна не ответила». Вы сможете позвонить ей сами.' data-en='After 10 minutes the bot sends you a message: "Anna hasn\'t replied". You can then call her yourself.'></p>
     </div>
     <div class="faq-item">
-      <h3>Как оплачивать после бесплатного периода?</h3>
-      <p>$5 в месяц. Ссылка на оплату приходит от бота.</p>
+      <h3 data-ru='Как оплачивать после бесплатного периода?' data-en='How do I pay after the free period?'></h3>
+      <p data-ru='$5 в месяц. Ссылка на оплату приходит от бота.' data-en='$5 per month. The payment link is sent by the bot.'></p>
     </div>
   </div>
 </section>
 
 <!-- FINAL CTA -->
 <section class="final-cta container">
-  <h2>Готовы перестать терять клиентов?</h2>
-  <p>Запустите бота за 2 минуты. Первая неделя — бесплатно.</p>
-  <a href="https://t.me/noshow_killer_bot" class="btn btn-lg">Попробовать RemindMe</a>
+  <h2 data-ru='Готовы перестать терять клиентов?' data-en='Ready to stop losing clients?'></h2>
+  <p data-ru='Запустите бота за 2 минуты. Первая неделя — бесплатно.' data-en='Launch the bot in 2 minutes. First week — free.'></p>
+  <a href="https://t.me/noshow_killer_bot" class="btn btn-lg" data-ru='Попробовать RemindMe' data-en='Try RemindMe'></a>
 </section>
 
 <footer>
@@ -573,6 +572,36 @@
     © 2026 RemindMe · <a href="https://t.me/noshow_killer_bot" style="color:#E07B39;text-decoration:none;">@noshow_killer_bot</a>
   </div>
 </footer>
+
+<script>
+  function setLang(lang) {
+    // Меняем текст у всех элементов с data-ru / data-en
+    document.querySelectorAll('[data-ru][data-en]').forEach(function(el) {
+      el.innerHTML = el.getAttribute('data-' + lang);
+    });
+
+    // Кнопки языка
+    document.getElementById('btn-ru').classList.toggle('active', lang === 'ru');
+    document.getElementById('btn-en').classList.toggle('active', lang === 'en');
+
+    // Меняем title и lang страницы
+    document.documentElement.lang = lang;
+    document.title = lang === 'ru'
+      ? 'RemindMe — бот, который перестаёт терять клиентов'
+      : 'RemindMe — stop losing clients to no-shows';
+
+    // Сохраняем выбор
+    localStorage.setItem('lang', lang);
+  }
+
+  // При загрузке — проверяем сохранённый язык
+  (function() {
+    var saved = localStorage.getItem('lang');
+    if (saved === 'en') {
+      setLang('en');
+    }
+  })();
+</script>
 
 </body>
 </html>
