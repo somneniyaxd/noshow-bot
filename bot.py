@@ -24,7 +24,7 @@ from aiogram.types import (
 # КОНФИГ
 # ============================================================
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-BOT_USERNAME = "noshow_killer_bot"  # без @
+BOT_USERNAME = "noshow_killer_bot"
 DATABASE_URL = os.getenv("DATABASE_URL", "noshow.db")
 
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Minsk")
@@ -48,7 +48,7 @@ REMINDER_PRESETS = [
     (1440, "За 24 часа"),
 ]
 
-PAYMENT_LINK = "https://example.com/pay"  # ЗАГЛУШКА
+PAYMENT_LINK = "https://example.com/pay"
 
 USE_POSTGRES = DATABASE_URL.startswith("postgres")
 
@@ -254,10 +254,7 @@ def start_trial_if_needed(user_id):
         trial_until, paid_until = row
         if not trial_until and not paid_until:
             new_trial = (now() + timedelta(days=TRIAL_DAYS)).strftime("%Y-%m-%d %H:%M")
-            cur.execute(
-                f"UPDATE subscriptions SET trial_until = {ph} WHERE user_id = {ph}",
-                (new_trial, user_id),
-            )
+            cur.execute(f"UPDATE subscriptions SET trial_until = {ph} WHERE user_id = {ph}", (new_trial, user_id))
             conn.commit()
     conn.close()
 
@@ -327,10 +324,9 @@ def days_left_ru(until_dt):
 
 
 # ============================================================
-# CUSTOMERS (клиенты мастера)
+# CUSTOMERS
 # ============================================================
 def find_customer(groomer_id, name):
-    """Ищет клиента мастера по имени (без учёта регистра)."""
     conn = get_conn()
     cur = conn.cursor()
     ph = "%s" if USE_POSTGRES else "?"
@@ -341,11 +337,10 @@ def find_customer(groomer_id, name):
     )
     row = cur.fetchone()
     conn.close()
-    return row  # (id, name, chat_id, invite_token) или None
+    return row
 
 
 def create_customer(groomer_id, name):
-    """Создаёт клиента + генерирует токен."""
     token = gen_token()
     conn = get_conn()
     cur = conn.cursor()
@@ -373,7 +368,7 @@ def get_customer_by_token(token):
     cur.execute(f"SELECT id, groomer_id, name FROM customers WHERE invite_token = {ph}", (token,))
     row = cur.fetchone()
     conn.close()
-    return row  # (id, groomer_id, name) или None
+    return row
 
 
 def link_customer_chat(customer_id, chat_id):
@@ -387,7 +382,7 @@ def link_customer_chat(customer_id, chat_id):
 
 
 # ============================================================
-# CLIENTS (записи)
+# CLIENTS
 # ============================================================
 def get_clients(groomer_id):
     conn = get_conn()
@@ -468,17 +463,18 @@ def reminder_settings_kb():
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# Хранилище диалогов (в памяти)
-# {user_id: {"step": "name"/"time", "name": "...", "customer_id": ..., "chat_id": ...}}
+# Хранилище активных диалогов
 dialog_state = {}
 
 
 # ============================================================
-# /start и роли
+# ПОРЯДОК ВАЖЕН: сначала ВСЕ конкретные кнопки/команды,
+# в самом конце — обработчик диалога.
 # ============================================================
+
+# ---------- /start, /reset ----------
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    # Проверяем, есть ли deep-link (ссылка-приглашение)
     args = message.text.split()
     if len(args) > 1 and args[1].startswith("visit_"):
         token = args[1].replace("visit_", "")
@@ -486,22 +482,17 @@ async def cmd_start(message: Message):
         if customer:
             cid, groomer_id, name = customer
             link_customer_chat(cid, message.from_user.id)
-
-            # Уведомляем мастера
             try:
                 await bot.send_message(
                     groomer_id,
                     f"✅ {name} подключился. Теперь напоминания будут приходить автоматически.",
                 )
             except Exception as e:
-                print(f"[LINK] Не удалось уведомить {groomer_id}: {e}")
-
-            # Клиенту
+                print(f"[LINK] {e}")
             set_role(message.from_user.id, "client")
             await message.answer(
                 f"Здравствуйте, {name}! 👋\n\n"
-                "Вы подключены к RemindMe. За день до визита мастер добавит вас — "
-                "и напоминание придёт автоматически.",
+                "Вы подключены к RemindMe. Напоминания о визитах придут автоматически.",
                 reply_markup=ReplyKeyboardRemove(),
             )
             return
@@ -509,7 +500,6 @@ async def cmd_start(message: Message):
             await message.answer("Ссылка недействительна. Попросите мастера отправить новую.")
             return
 
-    # Обычный /start
     role = get_role(message.from_user.id)
     if role == "groomer":
         start_trial_if_needed(message.from_user.id)
@@ -551,6 +541,7 @@ async def cmd_reset(message: Message):
     await message.answer("Роль сброшена. Напиши /start.", reply_markup=ReplyKeyboardRemove())
 
 
+# ---------- Роли ----------
 @dp.message(F.text == "Я мастер")
 async def choose_groomer(message: Message):
     set_role(message.from_user.id, "groomer")
@@ -580,9 +571,37 @@ async def choose_client(message: Message):
     )
 
 
-# ============================================================
-# НАСТРОЙКИ
-# ============================================================
+# ---------- Кнопки ----------
+@dp.message(F.text == "📋 Мои записи")
+async def btn_list(message: Message):
+    if get_role(message.from_user.id) != "groomer":
+        return
+    rows = get_clients(message.from_user.id)
+    if not rows:
+        await message.answer("Пока нет записей.")
+        return
+    text = "📋 Твои записи:\n\n"
+    for rid, name, visit_time, confirmed, cancelled, reschedule, chat_id, customer_id in rows:
+        if cancelled:
+            status = "❌"
+        elif reschedule:
+            status = "📞"
+        elif confirmed:
+            status = "✅"
+        elif not chat_id:
+            status = "🔗"
+        else:
+            status = "⏳"
+        text += f"{status} {name} — {visit_time}\n"
+    text += "\n🔗 — клиент ещё не подключён к боту."
+    await message.answer(text)
+
+
+@dp.message(Command("list"))
+async def cmd_list(message: Message):
+    await btn_list(message)
+
+
 @dp.message(F.text == "⚙️ Настройки")
 async def btn_settings(message: Message):
     if get_role(message.from_user.id) != "groomer":
@@ -615,20 +634,6 @@ async def cb_set_reminder(callback: CallbackQuery):
     await callback.answer()
 
 
-# ============================================================
-# ПОДПИСКА
-# ============================================================
-@dp.message(Command("pay"))
-async def cmd_pay(message: Message):
-    if get_role(message.from_user.id) != "groomer":
-        return
-    await message.answer(
-        "💳 Оплата подписки — $5/мес.\n\n"
-        f"Ссылка на оплату:\n{PAYMENT_LINK}\n\n"
-        "После оплаты напишите нам — активируем в течение часа."
-    )
-
-
 @dp.message(F.text == "💳 Подписка")
 async def btn_subscription(message: Message):
     if get_role(message.from_user.id) != "groomer":
@@ -651,6 +656,17 @@ async def btn_subscription(message: Message):
         )
 
 
+@dp.message(Command("pay"))
+async def cmd_pay(message: Message):
+    if get_role(message.from_user.id) != "groomer":
+        return
+    await message.answer(
+        "💳 Оплата подписки — $5/мес.\n\n"
+        f"Ссылка на оплату:\n{PAYMENT_LINK}\n\n"
+        "После оплаты напишите нам — активируем в течение часа."
+    )
+
+
 @dp.message(Command("activate"))
 async def cmd_activate(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -670,9 +686,12 @@ async def cmd_activate(message: Message):
         await message.answer("Формат: /activate 473980999")
 
 
-# ============================================================
-# ДОБАВЛЕНИЕ ЗАПИСИ — ПОШАГОВЫЙ ДИАЛОГ
-# ============================================================
+# ---------- Добавить запись ----------
+@dp.message(F.text == "➕ Добавить запись")
+async def btn_add(message: Message):
+    await cmd_add(message)
+
+
 @dp.message(Command("add"))
 async def cmd_add(message: Message):
     if get_role(message.from_user.id) != "groomer":
@@ -690,11 +709,7 @@ async def cmd_add(message: Message):
     )
 
 
-@dp.message(F.text == "➕ Добавить запись")
-async def btn_add(message: Message):
-    await cmd_add(message)
-
-
+# ---------- Отмена диалога ----------
 @dp.message(F.text == "❌ Отмена")
 async def btn_cancel_dialog(message: Message):
     if message.from_user.id in dialog_state:
@@ -704,167 +719,7 @@ async def btn_cancel_dialog(message: Message):
         await message.answer("Нечего отменять.", reply_markup=main_kb)
 
 
-# Обработчик диалога (должен идти ПОСЛЕ команд и кнопок)
-@dp.message(F.text & ~F.text.startswith("/"))
-async def handle_dialog(message: Message):
-    state = dialog_state.get(message.from_user.id)
-    if not state:
-        return
-
-    if get_role(message.from_user.id) != "groomer":
-        dialog_state.pop(message.from_user.id, None)
-        return
-
-    step = state.get("step")
-
-    if step == "name":
-        name = message.text.strip()
-        if len(name) < 2 or len(name) > 40:
-            await message.answer("Имя должно быть от 2 до 40 символов. Попробуй снова:")
-            return
-        state["name"] = name
-        state["step"] = "time"
-        await message.answer(
-            f"Шаг 2/2. На когда запись для <b>{name}</b>?\n\n"
-            f"Формат: <code>26.09 15:30</code>\n"
-            f"Также можно: <code>сегодня 15:30</code> или <code>завтра 12:00</code>",
-            parse_mode="HTML",
-            reply_markup=cancel_kb,
-        )
-        return
-
-    if step == "time":
-        text = message.text.strip().lower()
-        visit_dt = None
-        current = now()
-
-        # Попытка 1: "сегодня 15:30" / "завтра 12:00"
-        try:
-            parts = text.split()
-            if len(parts) == 2:
-                day_word, time_part = parts
-                time_obj = datetime.strptime(time_part, "%H:%M").time()
-                if day_word == "сегодня":
-                    visit_dt = datetime.combine(current.date(), time_obj)
-                elif day_word == "завтра":
-                    visit_dt = datetime.combine(current.date() + timedelta(days=1), time_obj)
-        except Exception:
-            pass
-
-        # Попытка 2: "26.09 15:30"
-        if visit_dt is None:
-            try:
-                visit_dt = datetime.strptime(text, "%d.%m %H:%M")
-                visit_dt = visit_dt.replace(year=current.year)
-                # Если дата в прошлом — берём следующий год
-                if visit_dt < current.replace(tzinfo=None):
-                    visit_dt = visit_dt.replace(year=current.year + 1)
-            except Exception:
-                pass
-
-        # Попытка 3: "26.09.2026 15:30"
-        if visit_dt is None:
-            try:
-                visit_dt = datetime.strptime(text, "%d.%m.%Y %H:%M")
-            except Exception:
-                pass
-
-        if visit_dt is None:
-            await message.answer(
-                "❌ Не понял. Напиши в формате:\n\n"
-                "<code>26.09 15:30</code>\n"
-                "или <code>сегодня 15:30</code>\n"
-                "или <code>завтра 12:00</code>",
-                parse_mode="HTML",
-            )
-            return
-
-        if visit_dt < current.replace(tzinfo=None):
-            await message.answer("❌ Дата уже прошла. Укажи будущее время.")
-            return
-
-        visit_str = visit_dt.strftime("%Y-%m-%d %H:%M")
-        name = state["name"]
-
-        # Ищем клиента в базе мастера
-        customer = find_customer(message.from_user.id, name)
-        invite_link = None
-
-        if customer:
-            customer_id, cust_name, cust_chat_id, cust_token = customer
-            chat_id = cust_chat_id  # может быть None
-        else:
-            customer_id, token = create_customer(message.from_user.id, name)
-            chat_id = None
-            invite_link = f"https://t.me/{BOT_USERNAME}?start=visit_{token}"
-
-        # Создаём запись
-        add_client(message.from_user.id, customer_id, name, chat_id, visit_str)
-        dialog_state.pop(message.from_user.id, None)
-
-        minutes = get_reminder_minutes(message.from_user.id)
-
-        if chat_id:
-            # Клиент уже подключён
-            await message.answer(
-                f"✅ Запись для <b>{name}</b> на <b>{visit_str}</b> создана.\n\n"
-                f"📩 Клиент уже подключён — напоминание придёт за {format_minutes(minutes)} до визита.",
-                parse_mode="HTML",
-                reply_markup=main_kb,
-            )
-        else:
-            # Нужна ссылка-приглашение
-            if not invite_link:
-                invite_link = f"https://t.me/{BOT_USERNAME}?start=visit_{cust_token}"
-            await message.answer(
-                f"✅ Запись для <b>{name}</b> на <b>{visit_str}</b> создана.\n\n"
-                f"🔗 <b>Отправьте клиенту ссылку</b>, чтобы он получал напоминания:\n\n"
-                f"<code>{invite_link}</code>\n\n"
-                f"После того как клиент откроет ссылку — напоминание придёт за {format_minutes(minutes)} до визита.\n\n"
-                f"Если клиент не в Telegram — можно напомнить ему самому в WhatsApp или по телефону.",
-                parse_mode="HTML",
-                reply_markup=main_kb,
-            )
-        return
-
-
-# ============================================================
-# СПИСОК ЗАПИСЕЙ
-# ============================================================
-@dp.message(Command("list"))
-async def cmd_list(message: Message):
-    if get_role(message.from_user.id) != "groomer":
-        await message.answer("Только для мастеров.")
-        return
-    rows = get_clients(message.from_user.id)
-    if not rows:
-        await message.answer("Пока нет записей.")
-        return
-    text = "📋 Твои записи:\n\n"
-    for rid, name, visit_time, confirmed, cancelled, reschedule, chat_id, customer_id in rows:
-        if cancelled:
-            status = "❌"
-        elif reschedule:
-            status = "📞"
-        elif confirmed:
-            status = "✅"
-        elif not chat_id:
-            status = "🔗"  # ждёт подключения
-        else:
-            status = "⏳"
-        text += f"{status} {name} — {visit_time}\n"
-    text += "\n🔗 — клиент ещё не подключён к боту."
-    await message.answer(text)
-
-
-@dp.message(F.text == "📋 Мои записи")
-async def btn_list(message: Message):
-    await cmd_list(message)
-
-
-# ============================================================
-# КНОПКИ КЛИЕНТА
-# ============================================================
+# ---------- Кнопки клиента ----------
 @dp.callback_query(F.data == "confirm")
 async def cb_confirm(callback: CallbackQuery):
     conn = get_conn()
@@ -912,10 +767,7 @@ async def cb_reschedule(callback: CallbackQuery):
         await callback.message.edit_text("У вас нет активных записей.")
         await callback.answer()
         return
-    cur.execute(
-        f"UPDATE clients SET reschedule = 1 WHERE chat_id = {ph} AND cancelled = 0",
-        (callback.from_user.id,),
-    )
+    cur.execute(f"UPDATE clients SET reschedule = 1 WHERE chat_id = {ph} AND cancelled = 0", (callback.from_user.id,))
     conn.commit()
     conn.close()
     await callback.message.edit_text("📞 Передал мастеру.")
@@ -943,10 +795,7 @@ async def cb_cancel(callback: CallbackQuery):
         await callback.message.edit_text("У вас нет активных записей.")
         await callback.answer()
         return
-    cur.execute(
-        f"UPDATE clients SET cancelled = 1 WHERE chat_id = {ph} AND cancelled = 0",
-        (callback.from_user.id,),
-    )
+    cur.execute(f"UPDATE clients SET cancelled = 1 WHERE chat_id = {ph} AND cancelled = 0", (callback.from_user.id,))
     conn.commit()
     conn.close()
     await callback.message.edit_text("❌ Визит отменён.")
@@ -959,6 +808,129 @@ async def cb_cancel(callback: CallbackQuery):
 
 
 # ============================================================
+# ОБРАБОТЧИК ДИАЛОГА — В САМОМ КОНЦЕ!
+# ============================================================
+@dp.message(F.text & ~F.text.startswith("/"))
+async def handle_dialog(message: Message):
+    state = dialog_state.get(message.from_user.id)
+    if not state:
+        # Нет активного диалога — просто игнорируем
+        return
+
+    if get_role(message.from_user.id) != "groomer":
+        dialog_state.pop(message.from_user.id, None)
+        return
+
+    step = state.get("step")
+
+    if step == "name":
+        name = message.text.strip()
+        if len(name) < 2 or len(name) > 40:
+            await message.answer("Имя должно быть от 2 до 40 символов. Попробуй снова:")
+            return
+        state["name"] = name
+        state["step"] = "time"
+        await message.answer(
+            f"Шаг 2/2. На когда запись для <b>{name}</b>?\n\n"
+            f"Формат: <code>26.09 15:30</code>\n"
+            f"Также можно: <code>сегодня 15:30</code> или <code>завтра 12:00</code>",
+            parse_mode="HTML",
+            reply_markup=cancel_kb,
+        )
+        return
+
+    if step == "time":
+        text = message.text.strip().lower()
+        visit_dt = None
+        current = now()
+
+        # Попытка 1: "сегодня 15:30" / "завтра 12:00"
+        try:
+            parts = text.split()
+            if len(parts) == 2:
+                day_word, time_part = parts
+                time_obj = datetime.strptime(time_part, "%H:%M").time()
+                if day_word == "сегодня":
+                    visit_dt = datetime.combine(current.date(), time_obj)
+                elif day_word == "завтра":
+                    visit_dt = datetime.combine(current.date() + timedelta(days=1), time_obj)
+        except Exception:
+            pass
+
+        # Попытка 2: "26.09 15:30"
+        if visit_dt is None:
+            try:
+                visit_dt = datetime.strptime(text, "%d.%m %H:%M")
+                visit_dt = visit_dt.replace(year=current.year)
+                if visit_dt < current.replace(tzinfo=None):
+                    visit_dt = visit_dt.replace(year=current.year + 1)
+            except Exception:
+                pass
+
+        # Попытка 3: "26.09.2026 15:30"
+        if visit_dt is None:
+            try:
+                visit_dt = datetime.strptime(text, "%d.%m.%Y %H:%M")
+            except Exception:
+                pass
+
+        if visit_dt is None:
+            await message.answer(
+                "❌ Не понял. Напиши в формате:\n\n"
+                "<code>26.09 15:30</code>\n"
+                "или <code>сегодня 15:30</code>\n"
+                "или <code>завтра 12:00</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        if visit_dt < current.replace(tzinfo=None):
+            await message.answer("❌ Дата уже прошла. Укажи будущее время.")
+            return
+
+        visit_str = visit_dt.strftime("%Y-%m-%d %H:%M")
+        name = state["name"]
+
+        customer = find_customer(message.from_user.id, name)
+        invite_link = None
+        cust_token = None
+
+        if customer:
+            customer_id, cust_name, cust_chat_id, cust_token = customer
+            chat_id = cust_chat_id
+        else:
+            customer_id, token = create_customer(message.from_user.id, name)
+            chat_id = None
+            cust_token = token
+            invite_link = f"https://t.me/{BOT_USERNAME}?start=visit_{token}"
+
+        add_client(message.from_user.id, customer_id, name, chat_id, visit_str)
+        dialog_state.pop(message.from_user.id, None)
+        minutes = get_reminder_minutes(message.from_user.id)
+
+        if chat_id:
+            await message.answer(
+                f"✅ Запись для <b>{name}</b> на <b>{visit_str}</b> создана.\n\n"
+                f"📩 Клиент уже подключён — напоминание придёт за {format_minutes(minutes)} до визита.",
+                parse_mode="HTML",
+                reply_markup=main_kb,
+            )
+        else:
+            if not invite_link:
+                invite_link = f"https://t.me/{BOT_USERNAME}?start=visit_{cust_token}"
+            await message.answer(
+                f"✅ Запись для <b>{name}</b> на <b>{visit_str}</b> создана.\n\n"
+                f"🔗 <b>Отправьте клиенту ссылку</b>, чтобы он получал напоминания:\n\n"
+                f"<code>{invite_link}</code>\n\n"
+                f"После того как клиент откроет ссылку — напоминание придёт за {format_minutes(minutes)} до визита.\n\n"
+                f"Если клиент не в Telegram — можно напомнить ему самому.",
+                parse_mode="HTML",
+                reply_markup=main_kb,
+            )
+        return
+
+
+# ============================================================
 # НАПОМИНАНИЯ
 # ============================================================
 async def reminder_loop():
@@ -968,7 +940,6 @@ async def reminder_loop():
             cur = conn.cursor()
             current = now()
 
-            # Ищем записи, у которых есть chat_id и которые пора напомнить
             cur.execute(
                 f"SELECT c.id, c.name, c.chat_id, c.groomer_id, c.visit_time, "
                 f"COALESCE(u.reminder_minutes, 30) AS reminder_minutes "
@@ -991,7 +962,6 @@ async def reminder_loop():
                 except Exception as e:
                     print(f"[SCHED] {name}: {e}")
 
-            # Молчащие
             conn = get_conn()
             cur = conn.cursor()
             cur.execute(
